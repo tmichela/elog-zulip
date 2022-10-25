@@ -130,7 +130,7 @@ class Elog(mechanize.Browser):
 
         # elog entry text
         text = soup.find('td', class_='messageframe')
-        md_text = pypandoc.convert_text(text, to='markdown_github', format='html')
+        md_text = pypandoc.convert_text(text, to='gfm', format='html')
         text = trim_lines(md_text)
         text = re.sub(r'\\(.)', r'\1', text)
 
