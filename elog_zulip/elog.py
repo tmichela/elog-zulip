@@ -76,6 +76,8 @@ class Elog(mechanize.Browser):
                     log.info(f'Inserting {data}')
                 def find_one(self, entry_id):
                     return None
+                def __len__(self):
+                    return 0
 
             class FakeZulip:
                 def send_message(self, message):
@@ -259,6 +261,25 @@ class ElogDoc(Elog):
         shifters = f'{entry["DOC Shift Leader"]}, {entry["DOC Shift Deputy"]}'
         subject = f'[{shifters} (DRC: {entry.DRC}): {entry.Subject}]({self.url}{entry.ID})'
         return [(entry, text, subject, attachments)]
+
+
+class ElogProposal(Elog):
+    def _new_posts(self):
+        log.info(f"[{type(self).__name__}] Checking for new posts in {self.url}")
+
+        page = None if len(self.entry) > 0 else "page"
+        entries = self.get_entries(page)
+
+        for (idx, entry) in entries.iloc[::-1].iterrows():
+            if entry.ID == "Draft" or self.entry.find_one(entry_id=int(entry.ID)):
+                continue
+
+            text, attachments = self.get_entry(entry.ID)
+            subject = f"[{entry.Author} wrote]({self.url}{entry.ID}):"
+            text = f"# :lab_coat: {entry.Subject}\n\n" + text
+            topic = entry.Category
+
+            yield entry, text, subject, attachments, topic, False
 
 
 def main(argv=None):
