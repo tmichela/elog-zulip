@@ -49,7 +49,7 @@ class Elog(mechanize.Browser):
         self.pswd = fr'{pswd}'
         self.url = config['elog-url']
         self.stream = config['zulip-stream']
-        self.topic = config['zulip-topic']
+        self.topic = config.get('zulip-topic', "Uncategorized")
         self.table = config['db-table']
 
         self._logged = False
@@ -163,9 +163,12 @@ class Elog(mechanize.Browser):
 
         return f'[{attachment["title"]}]({result["uri"]})'
 
-    def _publish(self, entry, text, subject=None, attachments=()):
+    def _publish(self, entry, text, subject=None, attachments=(),
+                 topic=None, quote=True):
+        topic = topic if topic is not None else self.topic
+
         content = subject or f"[{entry.Subject}]({self.url}{entry.ID}):"
-        content += f"\n```quote plain\n{text}\n```"
+        content += f"\n```quote plain\n{text}\n```" if quote else f"\n{text}"
 
         for attachment in attachments:
             log.info(f'New attachment: {attachment}')
@@ -176,7 +179,7 @@ class Elog(mechanize.Browser):
             #"to": [306218],
             "type": "stream",
             "to": self.stream,
-            "topic": self.topic,
+            "topic": topic,
             "content": content,
         }
         r = self.zulip.send_message(request)
