@@ -289,6 +289,8 @@ def main(argv=None):
     ap = ArgumentParser('elog-zulip-publisher',
                         description='Publish ELog entries to Zulip')
     ap.add_argument('config', help='toml configuration file')
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Connect to elog, but mock the database and Zulip.")
     args = ap.parse_args()
     config = toml.load(args.config)
 
@@ -301,11 +303,23 @@ def main(argv=None):
             retention=config['META'].get('log-retention')
         )
 
-    for elog in ('XO', 'Operation', 'Doc'):
-        if elog in config:
-            conf = config[elog].copy()
-            conf.update(config['META'])
-            globals()[f'Elog{elog}'](conf).publish()
+    meta = config.pop("META")
+
+    for elog, conf in config.items():
+        conf.update(meta)
+
+        if elog == "XO":
+            Publisher = ElogXO
+        elif elog == "Operation":
+            Publisher = ElogOperation
+        elif elog == "Doc":
+            Publisher = ElogDoc
+        elif re.fullmatch(r"p(\d{4}|\d{6})", elog) is not None:
+            Publisher = ElogProposal
+        else:
+            raise RuntimeError(f"Unknown elog type: {elog}")
+
+        Publisher(conf, args.dry_run).publish()
 
 
 if __name__ == '__main__':
