@@ -310,7 +310,7 @@ def main(argv=None):
 
         if elog == "XO":
             Publisher = ElogXO
-        elif elog == "Operation":
+        elif elog.startswith("Operation"):
             Publisher = ElogOperation
         elif elog == "Doc":
             Publisher = ElogDoc
