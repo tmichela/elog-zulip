@@ -49,7 +49,7 @@ class Elog(mechanize.Browser):
         self.pswd = fr'{pswd}'
         self.url = config['elog-url']
         self.stream = config['zulip-stream']
-        self.topic = config['zulip-topic']
+        self.topic = config.get('zulip-topic', "Uncategorized")
         self.table = config['db-table']
 
         self._logged = False
@@ -76,6 +76,8 @@ class Elog(mechanize.Browser):
                     log.info(f'Inserting {data}')
                 def find_one(self, entry_id):
                     return None
+                def __len__(self):
+                    return 0
 
             class FakeZulip:
                 def send_message(self, message):
@@ -130,7 +132,7 @@ class Elog(mechanize.Browser):
 
         # elog entry text
         text = soup.find('td', class_='messageframe')
-        md_text = pypandoc.convert_text(text, to='markdown_github', format='html')
+        md_text = pypandoc.convert_text(text, to='gfm', format='html')
         text = trim_lines(md_text)
         text = re.sub(r'\\(.)', r'\1', text)
 
@@ -163,9 +165,12 @@ class Elog(mechanize.Browser):
 
         return f'[{attachment["title"]}]({result["uri"]})'
 
-    def _publish(self, entry, text, subject=None, attachments=()):
+    def _publish(self, entry, text, subject=None, attachments=(),
+                 topic=None, quote=True):
+        topic = topic if topic is not None else self.topic
+
         content = subject or f"[{entry.Subject}]({self.url}{entry.ID}):"
-        content += f"\n```quote plain\n{text}\n```"
+        content += f"\n```quote plain\n{text}\n```" if quote else f"\n{text}"
 
         for attachment in attachments:
             log.info(f'New attachment: {attachment}')
@@ -176,7 +181,7 @@ class Elog(mechanize.Browser):
             #"to": [306218],
             "type": "stream",
             "to": self.stream,
-            "topic": self.topic,
+            "topic": topic,
             "content": content,
         }
         r = self.zulip.send_message(request)
@@ -258,6 +263,25 @@ class ElogDoc(Elog):
         return [(entry, text, subject, attachments)]
 
 
+class ElogProposal(Elog):
+    def _new_posts(self):
+        log.info(f"[{type(self).__name__}] Checking for new posts in {self.url}")
+
+        page = None if len(self.entry) > 0 else "page"
+        entries = self.get_entries(page)
+
+        for (idx, entry) in entries.iloc[::-1].iterrows():
+            if entry.ID == "Draft" or self.entry.find_one(entry_id=int(entry.ID)):
+                continue
+
+            text, attachments = self.get_entry(entry.ID)
+            subject = f"[{entry.Author} wrote]({self.url}{entry.ID}):"
+            text = f"# :lab_coat: {entry.Subject}\n\n" + text
+            topic = entry.Category
+
+            yield entry, text, subject, attachments, topic, False
+
+
 def main(argv=None):
     import os
     os.environ.setdefault('PYPANDOC_PANDOC', '/usr/bin/pandoc')
@@ -265,6 +289,8 @@ def main(argv=None):
     ap = ArgumentParser('elog-zulip-publisher',
                         description='Publish ELog entries to Zulip')
     ap.add_argument('config', help='toml configuration file')
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Connect to elog, but mock the database and Zulip.")
     args = ap.parse_args()
     config = toml.load(args.config)
 
@@ -277,11 +303,23 @@ def main(argv=None):
             retention=config['META'].get('log-retention')
         )
 
-    for elog in ('XO', 'Operation', 'Doc'):
-        if elog in config:
-            conf = config[elog].copy()
-            conf.update(config['META'])
-            globals()[f'Elog{elog}'](conf).publish()
+    meta = config.pop("META")
+
+    for elog, conf in config.items():
+        conf.update(meta)
+
+        if elog == "XO":
+            Publisher = ElogXO
+        elif elog.startswith("Operation"):
+            Publisher = ElogOperation
+        elif elog == "Doc":
+            Publisher = ElogDoc
+        elif re.fullmatch(r"p(\d{4}|\d{6})", elog) is not None:
+            Publisher = ElogProposal
+        else:
+            raise RuntimeError(f"Unknown elog type: {elog}")
+
+        Publisher(conf, args.dry_run).publish()
 
 
 if __name__ == '__main__':
