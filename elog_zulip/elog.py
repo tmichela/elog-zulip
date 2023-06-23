@@ -2,6 +2,7 @@ import os
 import re
 import warnings
 from argparse import ArgumentParser
+from copy import copy
 from io import BytesIO
 from typing import Collection, Iterator
 
@@ -9,12 +10,20 @@ import dataset
 import pandas as pd
 import toml
 import zulip
+from bs4 import BeautifulSoup
+from bs4.element import Tag
 from elog import Logbook
 from html2text import html2text
 from loguru import logger as log
 
+MD_LINE_WIDTH = 350
 
-def split_string(string: str, maxchar: int =9999) -> Iterator[str]:
+# TODO split large tables
+# TODO split large quotes
+# TODO insert images in text when placeholders are present
+
+
+def split_string(string: str, maxchar: int = 9999) -> Iterator[str]:
     next_block = ''
 
     for line in string.splitlines(keepends=True):
@@ -44,21 +53,45 @@ def assemble_strings(strings: Collection[str], maxchar: int =9999) -> Iterator[s
         yield assembled
 
 
-def table_to_md(html):
+def get_sub_tables(table, depth=1):
+    current_depth = len(table.find_parents("table"))
+    for sub_table in table.find_all("table"):
+        if (len(sub_table.find_parents("table")) - current_depth) == depth:
+            yield sub_table
+
+
+def table_to_md_4(table):
+    table = copy(table)
+    sub_tables = []
+    for st in get_sub_tables(table):
+        sub_tables.append(copy(st))
+        st.replace_with(BeautifulSoup('<p>{}</p>', 'lxml').p)
+
+    html = table.prettify()
     try:
         df = pd.read_html(html, header=0)[0]
     except ValueError:
         # failed finding a table
-        return html
-
-    df.fillna('', inplace=True)
-    return os.linesep + df.to_markdown(index=False) + os.linesep
+        return f"```quote\n{html2text(html, bodywidth=MD_LINE_WIDTH)}\n```\n"
+    
+    if df.columns.size == 1 and re.match(r'^.*? wrote:$', df.columns[0]):
+        # this table contains quote(s)
+        # we manually parse the table, as pandas does not retain cells formatting
+        author, text = table.find_all('td')[:2]
+        author = html2text(str(author), bodywidth=MD_LINE_WIDTH)
+        text = html2text(str(text), bodywidth=MD_LINE_WIDTH)
+        ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
+        ret = ret.format(*[table_to_md_4(st) for st in sub_tables])
+        return ret
+    else:
+        df.dropna(how='all', inplace=True)
+        df.fillna('', inplace=True)
+        table = df.to_markdown(index=False)
+        return f"\n{table}\n"
 
 
 def format_text(text, maxchar=9999):
-    TABLE_PATTERN = r'<table.*?</table>'
-
-    tables = re.findall(TABLE_PATTERN, text, re.DOTALL)
+    soup = BeautifulSoup(text, 'lxml')
     
     # split message in parts:
     #   - separate tables from the messages to be rendered with pandas
@@ -66,21 +99,18 @@ def format_text(text, maxchar=9999):
     parts, remain = [], ''
 
     def _add_part(_part):
-        for p in split_string(html2text(_part), maxchar=maxchar):
+        for p in split_string(html2text(_part, bodywidth=MD_LINE_WIDTH), maxchar=maxchar):
             if not p.strip():
                 continue
             parts.append(p)
 
-    if tables:
-        for table in tables:
-            part, _, remain = text.partition(table)
-            _add_part(part)
-            parts.append(table_to_md(table))
-
-        if remain:
-            _add_part(remain)
-    else:
-        _add_part(text)
+    remain = text
+    for table in get_sub_tables(soup, depth=0):
+        part, _, remain = str(soup).partition(str(table))
+        _add_part(part)
+        parts.append(table_to_md_4(table))
+    if remain:
+        _add_part(remain)
 
     # reassemble parts
     for p in assemble_strings(parts, maxchar=maxchar):
@@ -230,12 +260,10 @@ class ElogDoc(Elog):
 
 class ElogProposal(Elog):
     def format_message(self, attributes):
-        subject = f'[{attributes["Author"]} wrote]({self.entry_url(attributes)}):'
-        prefix = f'# :lab_coat: {attributes["Subject"]}\n\n'
-        topic = 'p003406'  #attributes['Category']
+        subject = f'# :note: **[{attributes["Author"]} wrote]({self.entry_url(attributes)}): {attributes["Subject"]}**\n'
+        topic = attributes.get('Type') or attributes.get('Category') or '(no topic)'
         return {
             'subject': subject,
-            'prefix': prefix,
             'topic': topic,
             'quote': False,
         }

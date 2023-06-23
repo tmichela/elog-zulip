@@ -34,11 +34,13 @@ setup(
 
     python_requires='>=3.7',
     install_requires=[
+        'bs4',
         'dataset',
         'html2text',
         'loguru',
         'pandas',
         'sqlalchemy==1.4.48',
+        'tabulate>=0.8.10',
         'toml',
         'zulip>=0.7.1',
     ],
