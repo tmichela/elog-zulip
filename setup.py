@@ -2,8 +2,6 @@
 from pathlib import Path
 import re
 from setuptools import setup, find_packages
-import shutil
-import sys
 
 
 def read(*parts):
@@ -16,12 +14,6 @@ def find_version(*parts):
     if match is not None:
         return match.group(1)
     raise RuntimeError("Unable to find version string.")
-
-
-# install pandoc
-if not shutil.which('pandoc'):
-    import pypandoc
-    pypandoc.download_pandoc(version='2.2.3.2', download_folder='/tmp')
 
 
 setup(
@@ -42,14 +34,11 @@ setup(
 
     python_requires='>=3.7',
     install_requires=[
-        'bs4',
-        'chardet',
         'dataset',
+        'html2text',
         'loguru',
-        'lxml',
-        'mechanize',
         'pandas',
-        'pypandoc',
+        'sqlalchemy==1.4.48',
         'toml',
         'zulip>=0.7.1',
     ],

@@ -1,73 +1,101 @@
-from argparse import ArgumentParser
-import http.cookiejar as cookielib
+import os
 import re
-from typing import Tuple
+import warnings
+from argparse import ArgumentParser
+from io import BytesIO
+from typing import Collection, Iterator
 
-from bs4 import BeautifulSoup
-from chardet import detect
 import dataset
-from loguru import logger as log
-import mechanize
 import pandas as pd
-import pypandoc
 import toml
 import zulip
+from elog import Logbook
+from html2text import html2text
+from loguru import logger as log
 
 
-def trim_lines(text, maxchar=80):
-    """Split lines to maxchar in text
+def split_string(string: str, maxchar: int =9999) -> Iterator[str]:
+    next_block = ''
+
+    for line in string.splitlines(keepends=True):
+        # TODO handle case where line is > maxchar
+        if len(next_block + line) > maxchar:
+            yield next_block
+            next_block = line
+        else:
+            next_block += line
+    if next_block:
+        yield next_block
+
+
+def assemble_strings(strings: Collection[str], maxchar: int =9999) -> Iterator[str]:
+    """Assemble consecutive strings up to maxchar.
     """
-    def split(lines):
-        for line in lines.splitlines():
-            if not line:
-                yield '\n'
+    assembled = ''
+    for string in strings:
+        # TODO handle len(string) > maxchar
+        if len(assembled + string) > maxchar:
+            if assembled:
+                yield assembled
+            assembled = string
+        else:
+            assembled += os.linesep + string
+    if assembled:
+        yield assembled
+
+
+def table_to_md(html):
+    try:
+        df = pd.read_html(html, header=0)[0]
+    except ValueError:
+        # failed finding a table
+        return html
+
+    df.fillna('', inplace=True)
+    return os.linesep + df.to_markdown(index=False) + os.linesep
+
+
+def format_text(text, maxchar=9999):
+    TABLE_PATTERN = r'<table.*?</table>'
+
+    tables = re.findall(TABLE_PATTERN, text, re.DOTALL)
+    
+    # split message in parts:
+    #   - separate tables from the messages to be rendered with pandas
+    #   - split text in multiple messages if it is too long
+    parts, remain = [], ''
+
+    def _add_part(_part):
+        for p in split_string(html2text(_part), maxchar=maxchar):
+            if not p.strip():
                 continue
-        
-            if line.startswith('|') and line.endswith('|'):
-                # this is hopefully a table
-                yield line
-                continue
+            parts.append(p)
 
-            s = ''
-            for word in line.split():
-                if len(s) + len(word) > maxchar:
-                    yield s
-                    s = word
-                else:
-                    s = ' '.join((s, word)) if s else word
-            if s:
-                yield s
-    return '\n'.join(split(text))
+    if tables:
+        for table in tables:
+            part, _, remain = text.partition(table)
+            _add_part(part)
+            parts.append(table_to_md(table))
+
+        if remain:
+            _add_part(remain)
+    else:
+        _add_part(text)
+
+    # reassemble parts
+    for p in assemble_strings(parts, maxchar=maxchar):
+        yield p
 
 
-class Elog(mechanize.Browser):
+class Elog:
     def __init__(self, config, dry_run=False):
-        super().__init__()
-
         user, pswd = config.get('elog-credentials', (None, ''))
-        self.user = user
-        self.pswd = fr'{pswd}'
-        self.url = config['elog-url']
+        url = config['elog-url']
+        self.logbook = Logbook(url, user=user, password=pswd)
+
         self.stream = config['zulip-stream']
         self.topic = config.get('zulip-topic', "Uncategorized")
         self.table = config['db-table']
-
-        self._logged = False
-        if self.user is None:
-            self._logged = True
-
-        # cookie jar
-        self.set_cookiejar(cookielib.LWPCookieJar())
-
-        # Browser options
-        self.set_handle_equiv(True)
-        self.set_handle_gzip(True)
-        self.set_handle_redirect(True)
-        self.set_handle_referer(True)
-        self.set_handle_robots(False)
-        self.set_handle_refresh(mechanize._http.HTTPRefreshProcessor(), max_time=1)
-
-        self.addheaders = [('User-agent', 'Chrome')]
 
         self.dry_run = dry_run
         if dry_run:
@@ -76,6 +104,8 @@ class Elog(mechanize.Browser):
                     log.info(f'Inserting {data}')
                 def find_one(self, entry_id):
                     return None
+                def find(self, *args, **kwargs):
+                    return None
                 def __len__(self):
                     return 0
 
@@ -83,7 +113,7 @@ class Elog(mechanize.Browser):
                 def send_message(self, message):
                     log.info(f'Sending {message}')
                     return {'result': 'success'}
-                def call_endpoint(self, endpoint, method, files):
+                def upload_file(self, file):
                     return {'result': 'success', 'uri': 'https://example.com'}
 
             self.entry = FakeDB()
@@ -96,196 +126,122 @@ class Elog(mechanize.Browser):
             self._db = dataset.connect(config['database'])
             self.entry = self._db[self.table]
 
-    @property
-    def logged_in(self):
-        return self._logged
+    def _saved_entries(self):
+        return [e['entry_id'] for e in self.entry.find(order_by=['entry_id']) or ()]
 
-    def login(self):
-        if self.logged_in:
-            return
+    def new_entries(self):
+        entries = self.logbook.get_message_ids()
+        for entry in sorted(set(entries).difference(self._saved_entries())):
 
-        self.open(self.url)
-        self.select_form(nr=0)
-        self.form['uname'] = self.user
-        self.form['upassword'] = self.pswd
-        self.submit()
-        self._logged = True
-
-    def _read_page(self, url):
-        if not self.logged_in:
-            self.login()
-
-        page = self.open(url).read()
-        encoding = detect(page)['encoding']
-        return page.decode(encoding)
-
-    def get_entries(self, page=None):
-        text = self._read_page(f'{self.url}{page or ""}')
-        soup = BeautifulSoup(text, 'html.parser')
-        table = soup.find('table', class_='listframe')
-        df = pd.read_html(str(table))[0]
-        return df
-
-    def get_entry(self, entry_id: int):
-        text = self._read_page(f'{self.url}{entry_id}')
-        soup = BeautifulSoup(text, 'html.parser')
-
-        # elog entry text
-        text = soup.find('td', class_='messageframe')
-        md_text = pypandoc.convert_text(text, to='gfm', format='html')
-        text = trim_lines(md_text)
-        text = re.sub(r'\\(.)', r'\1', text)
-
-        # elog entry attachment
-        attachments = []
-        for att in soup.find_all(class_='attachmentframe') or ():
-            attachment = att.find('img')
-            if attachment:
-                attachments.append(attachment.attrs)
-
-        return text, attachments
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                yield self.logbook.read(entry)
 
     def upload(self, attachment):
-        base, _, src_name = attachment["src"].rpartition("/")
-        fname = f'{base}/{attachment["alt"]}'
+        # download attachment from logbook
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            data = self.logbook.download_attachment(attachment)
+        file_ = BytesIO()
+        file_.write(data)
+        file_.name = attachment.rpartition('/')[-1]
+        file_.seek(0)
 
-        tempfile = f'/tmp/{fname.replace("/", "_")}'
-        self.retrieve(f'{self.url}{fname}', filename=tempfile)
+        # upload document to zulip
+        if (res := self.zulip.upload_file(file_))['result'] != 'success':
+            log.warning(f'Failed uploading {attachment} to zulip:\n{res["reason"]}')
+            return
+        return f'[{file_.name}]({res["uri"]})'
 
-        with open(tempfile, 'rb') as f:
-            # upload image to zulip
-            result = self.zulip.call_endpoint(
-                'user_uploads',
-                method='POST',
-                files=[f],
-            )
+    def entry_url(self, attributes):
+        return '/'.join([self.logbook._url, attributes['$@MID@$']])
 
-        if result['result'] != 'success':
-            raise Exception(result)
+    def _default_subject(self, attrs):
+        subject = attrs.get('Subject', 'no subject')
+        return f'[{subject}]({self.entry_url(attrs)}):'
 
-        return f'[{attachment["title"]}]({result["uri"]})'
-
-    def _publish(self, entry, text, subject=None, attachments=(),
-                 topic=None, quote=True):
-        topic = topic if topic is not None else self.topic
-
-        content = subject or f"[{entry.Subject}]({self.url}{entry.ID}):"
-        content += f"\n```quote plain\n{text}\n```" if quote else f"\n{text}"
-
-        for attachment in attachments:
-            log.info(f'New attachment: {attachment}')
-            content += f'\n{self.upload(attachment)}'
-
+    def _send_message(self, message, topic):
+        log.info(message)
         request = {
-            #"type": "private",
-            #"to": [306218],
+            # "type": "private",
+            # "to": [306218],
             "type": "stream",
             "to": self.stream,
             "topic": topic,
-            "content": content,
+            "content": message,
         }
-        r = self.zulip.send_message(request)
+        return self.zulip.send_message(request)
 
-        log.info(f'New publication: {self.url}{entry.ID} - {r["result"]}')
+    def _publish(self, text, attributes, attachments):
+        formatting = self.format_message(attributes)
+        topic = formatting.get('topic', self.topic)
+        subject = formatting.get('subject', self._default_subject(attributes))
+        quote = formatting.get('quote', True)
+        prefix = formatting.get('prefix', '')
+
+        for n, content in enumerate(format_text(text)):
+            content = f'```quote plain\n{content}\n```' if quote else f'{content}'
+            if n == 0:
+                content = f'{subject}\n{prefix}{content}'
+
+            r = self._send_message(content, topic)
+            log.info(f'New publication: {self.entry_url(attributes)} - {r}')
+
+        # upload attachments
+        attachments_text = ''
+        for attachment in attachments:
+            log.info(f'New attachment: {attachment}')
+            if uri := self.upload(attachment):
+                attachments_text += f'\n{uri}'
+        if attachments_text:
+            r = self._send_message(attachments_text, topic)
+            log.info(f'New publication: {self.entry_url(attributes)} - {r}')
 
         # add entry to db
-        data = {'entry_id': int(entry.ID),
-                'entry_date': entry.Date,
-                'entry_author': entry.Author}
+        data = {'entry_id': int(attributes["$@MID@$"]),
+                'entry_date': str(attributes['Date']),
+                'entry_author': str(attributes['Author'])}
         self.entry.insert(data, ['entry_id'])
 
     def publish(self):
-        for post in self._new_posts() or ():
-            self._publish(*post)
+        for content, attributes, attachments in self.new_entries():
+            self._publish(content, attributes, attachments)
 
-    def _new_posts(self):
-        raise NotImplementedError
+    def format_message(self, attributes):
+        return {}
 
 
 class ElogXO(Elog):
-    def _new_posts(self):
-        log.info(f'[{type(self).__name__}] Checking for new posts')
-        entries = self.get_entries()
-        newest_entry = int(pd.to_numeric(entries.ID, errors='coerce').max())
-        entry = entries.loc[entries.ID == newest_entry].squeeze()
-        log.info(entry)
-        if entry.ID.dtype.kind != 'i':
-            # draft entry
-            return []
-        if self.entry.find_one(entry_id=int(entry.ID)):
-            # entry is already published
-            return []
-
-        text, _ = self.get_entry(entry.ID)
-        return [(entry, text)]
+    pass
 
 
 class ElogOperation(Elog):
-    def _new_posts(self):
-        log.info(f'[{type(self).__name__}] Checking for new posts')
-        entries = self.get_entries()
-
-        for idx, entry in entries.iloc[::-1].iterrows():
-            try:
-                int(entry.ID)
-            except ValueError:
-                log.info(f'entry {idx} is a draft')
-                # draft entry
-                continue
-
-            if self.entry.find_one(entry_id=int(entry.ID)):
-                # entry is already published
-                continue
-
-            text, attachments = self.get_entry(entry.ID)
-            group = f' ({entry.Group})' if entry.Group else ''
-            subject = f"[{entry.Author}{group}: {entry.Subject}]({self.url}{entry.ID}):"
-
-            yield entry, text, subject, attachments
+    def format_message(self, attributes):
+        subject = f'[{attributes["Author"]} ({attributes["Group"]})]({self.entry_url(attributes)})'
+        return {'subject': subject}
 
 
 class ElogDoc(Elog):
-    def _new_posts(self):
-        log.info(f'[{type(self).__name__}] Checking for new posts')
-        entries = self.get_entries()
-        entries.ID = entries.ID.apply(pd.to_numeric, errors='coerce')
-        newest_entry = int(entries.ID.max())
-        entry = entries.loc[entries.ID == newest_entry].squeeze()
-        log.info(entry)
-
-        if self.entry.find_one(entry_id=int(entry.ID)):
-            # entry is already published
-            return []
-
-        text, attachments = self.get_entry(entry.ID)
-        shifters = f'{entry["DOC Shift Leader"]}, {entry["DOC Shift Deputy"]}'
-        subject = f'[{shifters} (DRC: {entry.DRC}): {entry.Subject}]({self.url}{entry.ID})'
-        return [(entry, text, subject, attachments)]
+    def format_message(self, attributes):
+        shifters = f'{attributes["DOC Shift Leader"]}, {attributes["DOC Shift Deputy"]}'
+        subject = f'[{shifters} (DRC: {attributes["DRC"]}): {attributes["Subject"]}]({self.entry_url(attributes)})'
+        return {'subject': subject}
 
 
 class ElogProposal(Elog):
-    def _new_posts(self):
-        log.info(f"[{type(self).__name__}] Checking for new posts in {self.url}")
-
-        page = None if len(self.entry) > 0 else "page"
-        entries = self.get_entries(page)
-
-        for (idx, entry) in entries.iloc[::-1].iterrows():
-            if entry.ID == "Draft" or self.entry.find_one(entry_id=int(entry.ID)):
-                continue
-
-            text, attachments = self.get_entry(entry.ID)
-            subject = f"[{entry.Author} wrote]({self.url}{entry.ID}):"
-            text = f"# :lab_coat: {entry.Subject}\n\n" + text
-            topic = entry.Category
-
-            yield entry, text, subject, attachments, topic, False
+    def format_message(self, attributes):
+        subject = f'[{attributes["Author"]} wrote]({self.entry_url(attributes)}):'
+        prefix = f'# :lab_coat: {attributes["Subject"]}\n\n'
+        topic = 'p003406'  #attributes['Category']
+        return {
+            'subject': subject,
+            'prefix': prefix,
+            'topic': topic,
+            'quote': False,
+        }
 
 
 def main(argv=None):
-    import os
-    os.environ.setdefault('PYPANDOC_PANDOC', '/usr/bin/pandoc')
-
     ap = ArgumentParser('elog-zulip-publisher',
                         description='Publish ELog entries to Zulip')
     ap.add_argument('config', help='toml configuration file')
