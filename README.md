@@ -49,7 +49,7 @@ db-table = ''
 
 [DOC]
 # credential to acces the elog page, formated ['username', 'password']
-credentials = ['', '']
+elog-credentials = ['', '']
 elog-url = ''
 zulip-stream = ''
 zulip-topic = ''
@@ -57,7 +57,7 @@ db-table = ''
 
 [proposal001234]
 # credential to acces the elog page, formated ['username', 'password']
-credentials = ['John', '1234']
+elog-credentials = ['John', '1234']
 elog-url = 'https://elog.institute.eu/proposal001234'
 zulip-stream = 'proposal001234'
 db-table = 'proposal001234'
