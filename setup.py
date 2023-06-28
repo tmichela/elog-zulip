@@ -36,7 +36,9 @@ setup(
     install_requires=[
         'bs4',
         'dataset',
+        'elog @ https://github.com/paulscherrerinstitute/py_elog/releases/tag/1.3.16',
         'html2text',
+        'jinja2',
         'loguru',
         'pandas',
         'sqlalchemy==1.4.48',

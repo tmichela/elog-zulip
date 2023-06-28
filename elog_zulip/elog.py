@@ -4,14 +4,14 @@ import warnings
 from argparse import ArgumentParser
 from copy import copy
 from io import BytesIO
-from typing import Collection, Iterator
+from typing import Any, Collection, Dict, Iterator
 
 import dataset
+import jinja2
 import pandas as pd
 import toml
 import zulip
 from bs4 import BeautifulSoup
-from bs4.element import Tag
 from elog import Logbook
 from html2text import html2text
 from loguru import logger as log
@@ -21,6 +21,7 @@ MD_LINE_WIDTH = 350
 # TODO split large tables
 # TODO split large quotes
 # TODO insert images in text when placeholders are present
+# TODO use config header or logbook name or zulip stream as db table?
 
 
 def split_string(string: str, maxchar: int = 9999) -> Iterator[str]:
@@ -54,13 +55,19 @@ def assemble_strings(strings: Collection[str], maxchar: int =9999) -> Iterator[s
 
 
 def get_sub_tables(table, depth=1):
+    """Get all sub tables at level `depth`.
+    """
     current_depth = len(table.find_parents("table"))
     for sub_table in table.find_all("table"):
         if (len(sub_table.find_parents("table")) - current_depth) == depth:
             yield sub_table
 
 
-def table_to_md_4(table):
+def table_to_md(table):
+    """Convert tables in html to markdown format.
+    
+    Tables here can be quoted elog entries or actual tables.
+    """
     table = copy(table)
     sub_tables = []
     for st in get_sub_tables(table):
@@ -81,13 +88,12 @@ def table_to_md_4(table):
         author = html2text(str(author), bodywidth=MD_LINE_WIDTH)
         text = html2text(str(text), bodywidth=MD_LINE_WIDTH)
         ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
-        ret = ret.format(*[table_to_md_4(st) for st in sub_tables])
+        ret = ret.format(*[table_to_md(st) for st in sub_tables])
         return ret
     else:
         df.dropna(how='all', inplace=True)
         df.fillna('', inplace=True)
-        table = df.to_markdown(index=False)
-        return f"\n{table}\n"
+        return f"\n{df.to_markdown(index=False)}\n"
 
 
 def format_text(text, maxchar=9999):
@@ -108,7 +114,7 @@ def format_text(text, maxchar=9999):
     for table in get_sub_tables(soup, depth=0):
         part, _, remain = str(soup).partition(str(table))
         _add_part(part)
-        parts.append(table_to_md_4(table))
+        parts.append(table_to_md(table))
     if remain:
         _add_part(remain)
 
@@ -123,9 +129,9 @@ class Elog:
         url = config['elog-url']
         self.logbook = Logbook(url, user=user, password=pswd)
 
-        self.stream = config['zulip-stream']
-        self.topic = config.get('zulip-topic', "Uncategorized")
         self.table = config['db-table']
+        self.stream = config['zulip-stream']
+        self.config = config
 
         self.dry_run = dry_run
         if dry_run:
@@ -192,6 +198,7 @@ class Elog:
 
     def _send_message(self, message, topic):
         log.info(message)
+        log.info(f'sending to #{self.stream}>>{topic}')
         request = {
             # "type": "private",
             # "to": [306218],
@@ -203,16 +210,21 @@ class Elog:
         return self.zulip.send_message(request)
 
     def _publish(self, text, attributes, attachments):
-        formatting = self.format_message(attributes)
-        topic = formatting.get('topic', self.topic)
-        subject = formatting.get('subject', self._default_subject(attributes))
-        quote = formatting.get('quote', True)
-        prefix = formatting.get('prefix', '')
+        attributes['EntryUrl'] = self.entry_url(attributes)
+        subject = self.config.get('elog-subject', self._default_subject(attributes))
+        prefix = self.config.get('elog-prefix', '')
+        topic = self.config.get('zulip-topic', '')
+        quote = self.config.get('quote', True)
+        # format subject, prefix and topic using jinja2
+        env = jinja2.Environment()
+        subject = env.from_string(subject).render(attributes)
+        prefix = env.from_string(prefix).render(attributes)
+        topic = env.from_string(topic).render(attributes) or 'no topic'
 
         for n, content in enumerate(format_text(text)):
             content = f'```quote plain\n{content}\n```' if quote else f'{content}'
             if n == 0:
-                content = f'{subject}\n{prefix}{content}'
+                content = f'{subject}\n{prefix}\n{content}'
 
             r = self._send_message(content, topic)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
@@ -237,37 +249,6 @@ class Elog:
         for content, attributes, attachments in self.new_entries():
             self._publish(content, attributes, attachments)
 
-    def format_message(self, attributes):
-        return {}
-
-
-class ElogXO(Elog):
-    pass
-
-
-class ElogOperation(Elog):
-    def format_message(self, attributes):
-        subject = f'[{attributes["Author"]} ({attributes["Group"]})]({self.entry_url(attributes)})'
-        return {'subject': subject}
-
-
-class ElogDoc(Elog):
-    def format_message(self, attributes):
-        shifters = f'{attributes["DOC Shift Leader"]}, {attributes["DOC Shift Deputy"]}'
-        subject = f'[{shifters} (DRC: {attributes["DRC"]}): {attributes["Subject"]}]({self.entry_url(attributes)})'
-        return {'subject': subject}
-
-
-class ElogProposal(Elog):
-    def format_message(self, attributes):
-        subject = f'# :note: **[{attributes["Author"]} wrote]({self.entry_url(attributes)}): {attributes["Subject"]}**\n'
-        topic = attributes.get('Type') or attributes.get('Category') or '(no topic)'
-        return {
-            'subject': subject,
-            'topic': topic,
-            'quote': False,
-        }
-
 
 def main(argv=None):
     ap = ArgumentParser('elog-zulip-publisher',
@@ -291,19 +272,7 @@ def main(argv=None):
 
     for elog, conf in config.items():
         conf.update(meta)
-
-        if elog == "XO":
-            Publisher = ElogXO
-        elif elog.startswith("Operation"):
-            Publisher = ElogOperation
-        elif elog == "Doc":
-            Publisher = ElogDoc
-        elif re.fullmatch(r"p(\d{4}|\d{6})", elog) is not None:
-            Publisher = ElogProposal
-        else:
-            raise RuntimeError(f"Unknown elog type: {elog}")
-
-        Publisher(conf, args.dry_run).publish()
+        Elog(conf, args.dry_run).publish()
 
 
 if __name__ == '__main__':
