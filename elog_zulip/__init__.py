@@ -8,7 +8,7 @@ import warnings
 from argparse import ArgumentParser
 from copy import copy
 from io import BytesIO
-from typing import Any, Collection, Dict, Iterator
+from typing import Any, Collection, Dict, Iterator, List, Tuple
 
 import dataset
 import jinja2
@@ -16,9 +16,11 @@ import pandas as pd
 import toml
 import zulip
 from bs4 import BeautifulSoup
-from elog import Logbook
+from elog import Logbook, LogbookMessageRejected, LogbookServerProblem
 from html2text import html2text
 from loguru import logger as log
+
+from .utils import retry
 
 MD_LINE_WIDTH = 350
 
@@ -106,8 +108,7 @@ def format_text(text, maxchar=9999):
     # split message in parts:
     #   - separate tables from the messages to be rendered with pandas
     #   - split text in multiple messages if it is too long
-    parts, remain = [], ''
-
+    parts = []
     def _add_part(_part):
         for p in split_string(html2text(_part, bodywidth=MD_LINE_WIDTH), maxchar=maxchar):
             if not p.strip():
@@ -116,15 +117,16 @@ def format_text(text, maxchar=9999):
 
     remain = text
     for table in get_sub_tables(soup, depth=0):
-        part, _, remain = str(soup).partition(str(table))
+        part, _, remain = str(BeautifulSoup(remain)).partition(str(table))
         _add_part(part)
         parts.append(table_to_md(table))
     if remain:
         _add_part(remain)
 
-    # reassemble parts
-    for p in assemble_strings(parts, maxchar=maxchar):
-        yield p
+    # # reassemble parts
+    # for p in assemble_strings(parts, maxchar=maxchar):
+    #     yield p
+    return parts
 
 
 class Elog:
@@ -169,13 +171,17 @@ class Elog:
     def _saved_entries(self):
         return [e['entry_id'] for e in self.entry.find(order_by=['entry_id']) or ()]
 
+    @retry(attempts=5, delay=1, exc=(LogbookServerProblem, LogbookMessageRejected))
+    def _read_entry(self, entry_id: int) -> Tuple[str, Dict[str, str], List[str]]:
+        return self.logbook.read(entry_id)
+
     def new_entries(self):
         entries = self.logbook.get_message_ids()
         for entry in sorted(set(entries).difference(self._saved_entries())):
 
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                yield self.logbook.read(entry)
+                yield self._read_entry(entry)
 
     def upload(self, attachment):
         # download attachment from logbook
