@@ -2,131 +2,25 @@
 """
 __version__ = "0.1.0"
 
-import os
-import re
 import warnings
 from argparse import ArgumentParser
-from copy import copy
 from io import BytesIO
-from typing import Any, Collection, Dict, Iterator, List, Tuple
+from typing import Dict, List, Tuple
 
 import dataset
 import jinja2
-import pandas as pd
 import toml
 import zulip
-from bs4 import BeautifulSoup
 from elog import Logbook, LogbookMessageRejected, LogbookServerProblem
-from html2text import html2text
 from loguru import logger as log
 
-from .utils import retry
-
-MD_LINE_WIDTH = 350
+from .mock import FakeDB, FakeZulip
+from .utils import format_text, retry
 
 # TODO split large tables
 # TODO split large quotes
 # TODO insert images in text when placeholders are present
 # TODO use config header or logbook name or zulip stream as db table?
-
-
-def split_string(string: str, maxchar: int = 9999) -> Iterator[str]:
-    next_block = ''
-
-    for line in string.splitlines(keepends=True):
-        # TODO handle case where line is > maxchar
-        if len(next_block + line) > maxchar:
-            yield next_block
-            next_block = line
-        else:
-            next_block += line
-    if next_block:
-        yield next_block
-
-
-def assemble_strings(strings: Collection[str], maxchar: int =9999) -> Iterator[str]:
-    """Assemble consecutive strings up to maxchar.
-    """
-    assembled = ''
-    for string in strings:
-        # TODO handle len(string) > maxchar
-        if len(assembled + string) > maxchar:
-            if assembled:
-                yield assembled
-            assembled = string
-        else:
-            assembled += os.linesep + string
-    if assembled:
-        yield assembled
-
-
-def get_sub_tables(table, depth=1):
-    """Get all sub tables at level `depth`.
-    """
-    current_depth = len(table.find_parents("table"))
-    for sub_table in table.find_all("table"):
-        if (len(sub_table.find_parents("table")) - current_depth) == depth:
-            yield sub_table
-
-
-def table_to_md(table):
-    """Convert tables in html to markdown format.
-    
-    Tables here can be quoted elog entries or actual tables.
-    """
-    table = copy(table)
-    sub_tables = []
-    for st in get_sub_tables(table):
-        sub_tables.append(copy(st))
-        st.replace_with(BeautifulSoup('<p>{}</p>', 'lxml').p)
-
-    html = table.prettify()
-    try:
-        df = pd.read_html(html, header=0)[0]
-    except ValueError:
-        # failed finding a table
-        return f"```quote\n{html2text(html, bodywidth=MD_LINE_WIDTH)}\n```\n"
-    
-    if df.columns.size == 1 and re.match(r'^.*? wrote:$', df.columns[0]):
-        # this table contains quote(s)
-        # we manually parse the table, as pandas does not retain cells formatting
-        author, text = table.find_all('td')[:2]
-        author = html2text(str(author), bodywidth=MD_LINE_WIDTH)
-        text = html2text(str(text), bodywidth=MD_LINE_WIDTH)
-        ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
-        ret = ret.format(*[table_to_md(st) for st in sub_tables])
-        return ret
-    else:
-        df.dropna(how='all', inplace=True)
-        df.fillna('', inplace=True)
-        return f"\n{df.to_markdown(index=False)}\n"
-
-
-def format_text(text, maxchar=9999):
-    soup = BeautifulSoup(text, 'lxml')
-    
-    # split message in parts:
-    #   - separate tables from the messages to be rendered with pandas
-    #   - split text in multiple messages if it is too long
-    parts = []
-    def _add_part(_part):
-        for p in split_string(html2text(_part, bodywidth=MD_LINE_WIDTH), maxchar=maxchar):
-            if not p.strip():
-                continue
-            parts.append(p)
-
-    remain = text
-    for table in get_sub_tables(soup, depth=0):
-        part, _, remain = str(BeautifulSoup(remain)).partition(str(table))
-        _add_part(part)
-        parts.append(table_to_md(table))
-    if remain:
-        _add_part(remain)
-
-    # # reassemble parts
-    # for p in assemble_strings(parts, maxchar=maxchar):
-    #     yield p
-    return parts
 
 
 class Elog:
@@ -141,26 +35,8 @@ class Elog:
 
         self.dry_run = dry_run
         if dry_run:
-            class FakeDB:
-                def insert(self, data, columns=None):
-                    log.info(f'Inserting {data}')
-                def find_one(self, entry_id):
-                    return None
-                def find(self, *args, **kwargs):
-                    return None
-                def __len__(self):
-                    return 0
-
-            class FakeZulip:
-                def send_message(self, message):
-                    log.info(f'Sending {message}')
-                    return {'result': 'success'}
-                def upload_file(self, file):
-                    return {'result': 'success', 'uri': 'https://example.com'}
-
             self.entry = FakeDB()
             self.zulip = FakeZulip()
-
         else:
             # zulip client
             self.zulip = zulip.Client(config_file=config['zulip-rc'])
@@ -231,11 +107,10 @@ class Elog:
         prefix = env.from_string(prefix).render(attributes)
         topic = env.from_string(topic).render(attributes) or 'no topic'
 
-        for n, content in enumerate(format_text(text)):
-            content = f'```quote plain\n{content}\n```' if quote else f'{content}'
-            if n == 0:
-                content = f'{subject}\n{prefix}\n{content}'
-
+        r = self._send_message(f'{subject}\n{prefix}', topic)
+        for content in format_text(text):
+            if quote:
+                content = f'```quote plain\n{content}\n```'
             r = self._send_message(content, topic)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
 
