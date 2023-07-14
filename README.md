@@ -49,9 +49,22 @@ db-table = ''
 
 [DOC]
 # credential to acces the elog page, formated ['username', 'password']
-credentials = ['', '']
+elog-credentials = ['', '']
 elog-url = ''
 zulip-stream = ''
 zulip-topic = ''
 db-table = ''
+
+[proposal001234]
+# credential to acces the elog page, formated ['username', 'password']
+elog-credentials = ['John', '1234']
+elog-url = 'https://elog.institute.eu/proposal001234'
+zulip-stream = 'proposal001234'
+db-table = 'proposal001234'
+# the following (optional) variables can be formatted using jinja2 syntax and use the elog entry variable as input (+ the elog 'EntryUrl')
+zulip-topic = '{{ Type }}'
+elog-subject = '# :note: **[{{ Author }} wrote]({{ EntryUrl }}): {{ Subject }}**\n'
+elog-prefix = '{{ Group }} - {{ location }} - {{ Component }}'
+# whether the top level elog entry is quoted on zulip or not (default, True)
+quote = false
 ```
