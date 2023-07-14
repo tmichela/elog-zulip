@@ -1,10 +1,11 @@
 """
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import warnings
 from argparse import ArgumentParser
 from io import BytesIO
+from time import sleep
 from typing import Dict, List, Tuple
 
 import dataset
@@ -17,10 +18,31 @@ from loguru import logger as log
 from .mock import FakeDB, FakeZulip
 from .utils import format_text, retry
 
-# TODO split large tables
 # TODO split large quotes
 # TODO insert images in text when placeholders are present
 # TODO use config header or logbook name or zulip stream as db table?
+
+
+__all__ = ['Elog']
+
+
+def _handle_z_error(caller, *args):
+    """Handles Zulip errors.
+    """
+    res = caller(*args)
+    if res['result'] == 'success':
+        if param := res.get('ignored_parameters_unsupported'):
+            log.warning(f'Ignored unsupported parameters: {param}')
+        return res
+
+    code = res.get('code')
+    if code == 'RATE_LIMIT_HIT':
+        # wait for requested timeout (+1s) and resend the request
+        wait = 1 + res["retry-after"]
+        log.info(f'Zulip: {res["msg"]}, waiting {wait}')
+        sleep(wait)
+        return _handle_z_error(caller, *args)
+    raise Exception(res.get('msg', res))
 
 
 class Elog:
@@ -53,10 +75,12 @@ class Elog:
 
     def new_entries(self):
         entries = self.logbook.get_message_ids()
-        for entry in sorted(set(entries).difference(self._saved_entries())):
+        new_entries = sorted(set(entries).difference(self._saved_entries()))
+        log.info(f'New entries {new_entries}')
 
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for entry in new_entries:
                 yield self._read_entry(entry)
 
     def upload(self, attachment):
@@ -70,9 +94,7 @@ class Elog:
         file_.seek(0)
 
         # upload document to zulip
-        if (res := self.zulip.upload_file(file_))['result'] != 'success':
-            log.warning(f'Failed uploading {attachment} to zulip:\n{res["reason"]}')
-            return
+        res = _handle_z_error(self.zulip.upload_file, file_)
         return f'[{file_.name}]({res["uri"]})'
 
     def entry_url(self, attributes):
@@ -93,14 +115,16 @@ class Elog:
             "topic": topic,
             "content": message,
         }
-        return self.zulip.send_message(request)
+        res = _handle_z_error(self.zulip.send_message, request)
+        r = self.zulip.send_message(request)
+        return res
 
     def _publish(self, text, attributes, attachments):
         attributes['EntryUrl'] = self.entry_url(attributes)
         subject = self.config.get('elog-subject', self._default_subject(attributes))
         prefix = self.config.get('elog-prefix', '')
         topic = self.config.get('zulip-topic', '')
-        quote = self.config.get('quote', True)
+        quote = self.config.get('quote', False)
         # format subject, prefix and topic using jinja2
         env = jinja2.Environment()
         subject = env.from_string(subject).render(attributes)
