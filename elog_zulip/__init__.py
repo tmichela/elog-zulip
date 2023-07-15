@@ -116,7 +116,6 @@ class Elog:
             "content": message,
         }
         res = _handle_z_error(self.zulip.send_message, request)
-        r = self.zulip.send_message(request)
         return res
 
     def _publish(self, text, attributes, attachments):
