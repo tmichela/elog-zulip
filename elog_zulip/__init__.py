@@ -120,6 +120,9 @@ class Elog:
 
     def _publish(self, text, attributes, attachments):
         attributes['EntryUrl'] = self.entry_url(attributes)
+        attributes['EntryID'] = attributes['$@MID@$']
+        ext = {k.replace(' ', '_'): v for k, v in attributes.items() if ' ' in k}
+        attributes.update(ext)
         subject = self.config.get('elog-subject', self._default_subject(attributes))
         prefix = self.config.get('elog-prefix', '')
         topic = self.config.get('zulip-topic', '')
