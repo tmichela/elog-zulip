@@ -84,7 +84,7 @@ def table_to_md(table):
     html = table.prettify()
     try:
         df = pd.read_html(html, header=0)[0]
-    except ValueError:
+    except (IndexError, ValueError):
         # failed finding a table
         return f"```quote\n{html2text(html, bodywidth=MD_LINE_WIDTH)}\n```\n"
 
