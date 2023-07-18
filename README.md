@@ -67,4 +67,6 @@ elog-subject = '# :note: **[{{ Author }} wrote]({{ EntryUrl }}): {{ Subject }}**
 elog-prefix = '{{ Group }} - {{ location }} - {{ Component }}'
 # whether the top level elog entry is quoted on zulip or not (default, True)
 quote = false
+# whether to show elog entry attributes
+show-header = false
 ```

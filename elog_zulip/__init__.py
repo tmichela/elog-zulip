@@ -104,6 +104,19 @@ class Elog:
         subject = attrs.get('Subject', 'no subject')
         return f'[{subject}]({self.entry_url(attrs)}):'
 
+    def _default_header(self, attrs):
+        attrs = attrs.copy()
+        attrs.pop('Subject')
+        attrs.pop('$@MID@$')
+        attrs.pop('Author')
+        attrs.pop('Encoding')
+        ret = '```quote\n'
+        ret += f'Date: {attrs.pop("Date")}\n\n'
+        for key, value in sorted(attrs.items()):
+            ret += f'{key}: **{value}**\n'
+        ret += '```\n'
+        return ret
+
     def _send_message(self, message, topic):
         log.info(message)
         log.info(f'sending to #{self.stream}>>{topic}')
@@ -119,6 +132,8 @@ class Elog:
         return res
 
     def _publish(self, text, attributes, attachments):
+        header = self._default_header(attributes)
+
         attributes['EntryUrl'] = self.entry_url(attributes)
         attributes['EntryID'] = attributes['$@MID@$']
         ext = {k.replace(' ', '_'): v for k, v in attributes.items() if ' ' in k}
@@ -127,13 +142,14 @@ class Elog:
         prefix = self.config.get('elog-prefix', '')
         topic = self.config.get('zulip-topic', '')
         quote = self.config.get('quote', False)
+        show_header = self.config.get('show-header', True)
         # format subject, prefix and topic using jinja2
         env = jinja2.Environment()
         subject = env.from_string(subject).render(attributes)
         prefix = env.from_string(prefix).render(attributes)
         topic = env.from_string(topic).render(attributes) or 'no topic'
 
-        r = self._send_message(f'{subject}\n{prefix}', topic)
+        r = self._send_message(f'{subject}\n{header if show_header else ""}{prefix}', topic)
         for content in format_text(text):
             if quote:
                 content = f'```quote plain\n{content}\n```'

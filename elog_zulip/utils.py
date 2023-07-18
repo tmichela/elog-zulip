@@ -95,7 +95,8 @@ def table_to_md(table):
         author = html2text(str(author), bodywidth=MD_LINE_WIDTH)
         text = html2text(str(text), bodywidth=MD_LINE_WIDTH)
         ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
-        ret = ret.format(*[table_to_md(st) for st in sub_tables])
+        if sub_tables:
+            ret = ret.format(*[table_to_md(st) for st in sub_tables])
         return ret
     else:
         df.dropna(how='all', inplace=True)
