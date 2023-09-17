@@ -96,6 +96,7 @@ def table_to_md(table):
         text = html2text(str(text), bodywidth=MD_LINE_WIDTH)
         ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
         if sub_tables:
+            ret = ret.replace('{', '{{').replace('}', '}}')
             ret = ret.format(*[table_to_md(st) for st in sub_tables])
         return ret
     else:

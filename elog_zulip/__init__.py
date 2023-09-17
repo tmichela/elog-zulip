@@ -67,14 +67,16 @@ class Elog:
             self.entry = self._db[self.table]
 
     def _saved_entries(self):
-        return [e['entry_id'] for e in self.entry.find(order_by=['entry_id']) or ()]
+        return {int(e['entry_id']) for e in self.entry.find(order_by=['entry_id']) or ()}
 
     @retry(attempts=5, delay=1, exc=(LogbookServerProblem, LogbookMessageRejected))
     def _read_entry(self, entry_id: int) -> Tuple[str, Dict[str, str], List[str]]:
         return self.logbook.read(entry_id)
 
     def new_entries(self):
-        entries = self.logbook.get_message_ids()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            entries = self.logbook.get_message_ids()
         new_entries = sorted(set(entries).difference(self._saved_entries()))
         log.info(f'New entries {new_entries}')
 
