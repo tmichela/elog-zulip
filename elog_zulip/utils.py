@@ -16,8 +16,13 @@ MSG_MAX_CHAR = 10_000
 def html_to_md(html, columns=MD_LINE_WIDTH):
     md = convert_text(html, to='gfm', format='html', extra_args=[f'--columns={columns}'])
     # clean html markup
-    # md = re.sub(r'<[^>]+>', '', md)
     md = re.sub(r'<.*?>(.*?)<\/.*?>', '\g<1>', md, flags=re.DOTALL)
+    # do not escape '\' at begining of lines (likely bullet points)
+    md = re.sub(r'^(\s*)\\-', '\g<1>-', md, flags=re.MULTILINE)
+    # do not escape "[]*""
+    md = re.sub(r'\\([\[\]\*])', '\g<1>', md)
+    # -[]*
+    # \`_{}()>#+.!
     return md
 
 
