@@ -174,7 +174,11 @@ class Elog:
                 'entry_author': str(attributes['Author'])}
         self.entry.insert(data, ['entry_id'])
 
-    def publish(self):
+    def publish(self, id: int = None):
+        if id is not None:
+            self._publish(*self._read_entry(id))
+            return
+
         for content, attributes, attachments in self.new_entries():
             self._publish(content, attributes, attachments)
 

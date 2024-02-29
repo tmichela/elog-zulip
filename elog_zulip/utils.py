@@ -7,10 +7,18 @@ from typing import Collection, Iterator
 
 import pandas as pd
 from bs4 import BeautifulSoup
-from html2text import html2text
+from pypandoc import convert_text
 
 MD_LINE_WIDTH = 350
 MSG_MAX_CHAR = 10_000
+
+
+def html_to_md(html, columns=MD_LINE_WIDTH):
+    md = convert_text(html, to='gfm', format='html', extra_args=[f'--columns={columns}'])
+    # clean html markup
+    # md = re.sub(r'<[^>]+>', '', md)
+    md = re.sub(r'<.*?>(.*?)<\/.*?>', '\g<1>', md, flags=re.DOTALL)
+    return md
 
 
 def split_string(string: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
@@ -86,14 +94,14 @@ def table_to_md(table):
         df = pd.read_html(html, header=0)[0]
     except (IndexError, ValueError):
         # failed finding a table
-        return f"```quote\n{html2text(html, bodywidth=MD_LINE_WIDTH)}\n```\n"
+        return f"```quote\n{html_to_md(html)}\n```\n"
 
     if df.columns.size == 1 and re.match(r'^.*? wrote:$', df.columns[0]):
         # this table contains quote(s)
         # we manually parse the table, as pandas does not retain cells formatting
         author, text = table.find_all('td')[:2]
-        author = html2text(str(author), bodywidth=MD_LINE_WIDTH)
-        text = html2text(str(text), bodywidth=MD_LINE_WIDTH)
+        author = html_to_md(str(author))
+        text = html_to_md(str(text))
         ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
         if sub_tables:
             ret = ret.replace('{', '{{').replace('}', '}}')
@@ -118,7 +126,7 @@ def format_text(text, maxchar=MSG_MAX_CHAR):
     #   - split text in multiple messages if it is too long
     parts = []
     def _add_part(_part):
-        for p in split_string(html2text(_part, bodywidth=MD_LINE_WIDTH), maxchar=maxchar):
+        for p in split_string(html_to_md(_part), maxchar=maxchar):
             if not p.strip():
                 continue
             parts.append(p)
