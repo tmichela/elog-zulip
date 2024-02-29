@@ -15,9 +15,9 @@ $ python3 -m pip install ./elog-zulip
 # Usage
 
 ```python
-from elog_zulip import Publisher
-publisher = Publisher('~/configuration.toml')
-publisher.publish()
+from elog_zulip import Elog
+elog = Elog('~/configuration.toml')
+elog.publish()
 ```
 
 or from the command line:
