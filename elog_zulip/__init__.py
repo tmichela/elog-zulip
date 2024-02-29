@@ -160,10 +160,10 @@ class Elog:
 
         # upload attachments
         attachments_text = ''
-        for attachment in attachments:
+        for idx, attachment in enumerate(attachments, start=1):
             log.info(f'New attachment: {attachment}')
             if uri := self.upload(attachment):
-                attachments_text += f'\n{uri}'
+                attachments_text += f'\n[{idx}] {uri}'
         if attachments_text:
             r = self._send_message(attachments_text, topic)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
