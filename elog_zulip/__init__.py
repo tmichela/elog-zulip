@@ -115,7 +115,7 @@ class Elog:
         ret = '```quote\n'
         ret += f'Date: **{attrs.pop("Date")}**\n\n'
         for key, value in sorted(attrs.items()):
-            ret += f'{key}: **{value}**\n'
+            ret += f'{key}: **{value}**\n' if value else f'{key}:\n'
         ret += '```\n'
         return ret
 
