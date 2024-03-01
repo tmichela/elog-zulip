@@ -152,9 +152,19 @@ class Elog:
         topic = env.from_string(topic).render(attributes) or 'no topic'
 
         r = self._send_message(f'{subject}\n{header if show_header else ""}{prefix}', topic)
-        for content in format_text(text):
+        for content, embedded_images in format_text(text):
             if quote:
                 content = f'```quote plain\n{content}\n```'
+
+            for placeholder, img in embedded_images:
+                # upload image
+                if uri := _handle_z_error(self.zulip.upload_file, img)['uri']:
+                    try:
+                        content = content.format(**{placeholder: f'[]({uri})'})
+                    except IndexError:
+                        print(content)
+                        print(placeholder)
+
             r = self._send_message(content, topic)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
 

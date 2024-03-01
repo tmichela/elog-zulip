@@ -1,9 +1,12 @@
 import os
 import re
+from base64 import b64decode
 from copy import copy
 from functools import partial, wraps
+from io import BytesIO
 from time import sleep
 from typing import Collection, Iterator
+from uuid import uuid4
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -14,9 +17,9 @@ MSG_MAX_CHAR = 10_000
 
 
 def html_to_md(html, columns=MD_LINE_WIDTH):
-    # remove span tags
-    soup = BeautifulSoup(html, 'html.parser')
-    for tag in soup.find_all('span'):
+    # remove [span, div] tags
+    soup = BeautifulSoup(html, 'lxml')
+    for tag in soup.find_all(['span', 'div']):
         tag.unwrap()
     html = str(soup)
 
@@ -25,8 +28,8 @@ def html_to_md(html, columns=MD_LINE_WIDTH):
 
     # do not escape '-' at begining of lines (likely bullet points)
     md = re.sub(r'^(\s*)\\-', '\g<1>-', md, flags=re.MULTILINE)
-    # do not escape "[]*~"
-    md = re.sub(r'\\([\[\]\*\~])', '\g<1>', md)
+    # do not escape "[]*~<"
+    md = re.sub(r'\\([\[\]\*\~\<])', '\g<1>', md)
     # do not excape ">" except at start of line (interpreted as quote)
     md = re.sub(r'(?<!^)\\\>', '>', md, flags=re.MULTILINE)
     # -[]*>
@@ -99,8 +102,9 @@ def table_to_md(table):
     table = copy(table)
     sub_tables = []
     for st in get_sub_tables(table):
-        sub_tables.append(copy(st))
-        st.replace_with(BeautifulSoup('<p>{}</p>', 'lxml').p)
+        tb_id = str(uuid4())
+        sub_tables.append((copy(st), tb_id))
+        st.replace_with(BeautifulSoup(f'<p>{{{tb_id}}}</p>', 'lxml').p)
 
     html = table.prettify()
     try:
@@ -117,8 +121,16 @@ def table_to_md(table):
         text = html_to_md(str(text))
         ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
         if sub_tables:
-            ret = ret.replace('{', '{{').replace('}', '}}')
-            ret = ret.format(*[table_to_md(st) for st in sub_tables])
+            def _format(**kwargs):
+                try:
+                    placeholders = {id_: table_to_md(st) for st, id_ in sub_tables}
+                    placeholders.update(kwargs)
+                    return ret.format(**placeholders)
+                except KeyError as kerr:
+                    key = kerr.args[0]
+                    return _format(**{key: f'{{{key}}}', **kwargs})
+
+            ret = _format()
         return ret
     else:
         df.dropna(how='all', inplace=True)
@@ -131,6 +143,36 @@ def table_to_md(table):
         return f"\n{df.to_markdown(index=False)}\n"
 
 
+def extract_embedded_images(html: str | BeautifulSoup):
+    """extract embedded images from an html string
+
+    Returns:
+        Tuple[BeautifulSoup, List[str, BytesIO]]: trimmed html and list of images
+    """
+    if isinstance(html, str):
+        soup = BeautifulSoup(html, 'lxml')
+    else:
+        soup = html
+
+    images = []
+    for idx, img in enumerate(soup.find_all('img')):
+        if not (src := img.attrs.get('src')):
+            continue
+        metadata, _, data = src.partition(',')
+        if metadata == 'data:image/png;base64':
+            f = BytesIO()
+            f.write(b64decode(data))
+            f.name = img.attrs.get('alt', None) or f'image_{idx}.png'
+            f.seek(0)
+            img.replace_with(f'{{image_{idx}}}')
+            images.append((f'image_{idx}', f))
+        else:
+            print('Embedded image in elog entry:')
+            print(img.attrs)
+
+    return soup, images
+
+
 def format_text(text, maxchar=MSG_MAX_CHAR):
     soup = BeautifulSoup(text, 'lxml')
 
@@ -139,18 +181,27 @@ def format_text(text, maxchar=MSG_MAX_CHAR):
     #   - split text in multiple messages if it is too long
     parts = []
     def _add_part(_part):
-        for p in split_string(html_to_md(_part), maxchar=maxchar):
+        _part, images = extract_embedded_images(_part)
+        for p in split_string(html_to_md(str(_part)), maxchar=maxchar):
             if not p.strip():
                 continue
-            parts.append(p)
+            part_images = [im for im in images if im[0] in p]
+            parts.append((p, part_images))
 
     remain = text
     for table in get_sub_tables(soup, depth=0):
         part, _, remain = str(BeautifulSoup(remain, 'lxml')).partition(str(table))
         _add_part(part)
 
+        table, table_images = extract_embedded_images(table)
         md_table = table_to_md(table)
-        parts.extend([md_table] if isinstance(md_table, str) else md_table)
+
+        if isinstance(md_table, str):
+            parts.append((md_table, table_images))
+        else:
+            for t in md_table:
+                t_images = [im for im in table_images if im[0] in t]
+                parts.append((t, t_images))
     if remain:
         _add_part(remain)
 
