@@ -113,7 +113,7 @@ class Elog:
         attrs.pop('Author')
         attrs.pop('Encoding')
         ret = '```quote\n'
-        ret += f'Date: **{attrs.pop("Date")}**\n\n'
+        ret += f'Date: **`{attrs.pop("Date")}`**\n\n'
         for key, value in sorted(attrs.items()):
             ret += f'{key}: **{value}**\n' if value else f'{key}:\n'
         ret += '```\n'
