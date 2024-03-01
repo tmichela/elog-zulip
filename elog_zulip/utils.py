@@ -28,12 +28,12 @@ def html_to_md(html, columns=MD_LINE_WIDTH):
 
     # do not escape '-' at begining of lines (likely bullet points)
     md = re.sub(r'^(\s*)\\-', '\g<1>-', md, flags=re.MULTILINE)
-    # do not escape "[]*~<"
-    md = re.sub(r'\\([\[\]\*\~\<])', '\g<1>', md)
+    # do not escape "[]*~<.()"
+    md = re.sub(r'\\([\[\]\*\~\<\.\(\)])', '\g<1>', md)
     # do not excape ">#" except at start of line (interpreted as quote)
     md = re.sub(r'(?<!^)\\([\>\#])', '\g<1>', md, flags=re.MULTILINE)
-    # -[]*>
-    # \`_{}()#+.!
+    # -[]*>#()
+    # \`_{}+.!
     return md
 
 
