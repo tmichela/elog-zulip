@@ -14,15 +14,23 @@ MSG_MAX_CHAR = 10_000
 
 
 def html_to_md(html, columns=MD_LINE_WIDTH):
+    # remove span tags
+    soup = BeautifulSoup(html, 'html.parser')
+    for tag in soup.find_all('span'):
+        tag.unwrap()
+    html = str(soup)
+
+    # convert html to markdown
     md = convert_text(html, to='gfm', format='html', extra_args=[f'--columns={columns}'])
-    # clean html markup
-    md = re.sub(r'<.*?>(.*?)<\/.*?>', '\g<1>', md, flags=re.DOTALL)
-    # do not escape '\' at begining of lines (likely bullet points)
+
+    # do not escape '-' at begining of lines (likely bullet points)
     md = re.sub(r'^(\s*)\\-', '\g<1>-', md, flags=re.MULTILINE)
-    # do not escape "[]*""
-    md = re.sub(r'\\([\[\]\*])', '\g<1>', md)
-    # -[]*
-    # \`_{}()>#+.!
+    # do not escape "[]*~"
+    md = re.sub(r'\\([\[\]\*\~])', '\g<1>', md)
+    # do not excape ">" except at start of line (interpreted as quote)
+    md = re.sub(r'(?<!^)\\\>', '>', md, flags=re.MULTILINE)
+    # -[]*>
+    # \`_{}()#+.!
     return md
 
 
