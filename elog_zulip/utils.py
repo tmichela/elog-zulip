@@ -30,8 +30,8 @@ def html_to_md(html, columns=MD_LINE_WIDTH):
     md = re.sub(r'^(\s*)\\-', '\g<1>-', md, flags=re.MULTILINE)
     # do not escape "[]*~<"
     md = re.sub(r'\\([\[\]\*\~\<])', '\g<1>', md)
-    # do not excape ">" except at start of line (interpreted as quote)
-    md = re.sub(r'(?<!^)\\\>', '>', md, flags=re.MULTILINE)
+    # do not excape ">#" except at start of line (interpreted as quote)
+    md = re.sub(r'(?<!^)\\([\>\#])', '\g<1>', md, flags=re.MULTILINE)
     # -[]*>
     # \`_{}()#+.!
     return md
