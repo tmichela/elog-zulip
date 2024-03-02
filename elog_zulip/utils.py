@@ -27,13 +27,13 @@ def html_to_md(html, columns=MD_LINE_WIDTH):
     md = convert_text(html, to='gfm', format='html', extra_args=[f'--columns={columns}'])
 
     # do not escape '-' at begining of lines (likely bullet points)
-    md = re.sub(r'^(\s*)\\-', '\g<1>-', md, flags=re.MULTILINE)
+    md = re.sub(r'^(\s*)\\-', r'\g<1>-', md, flags=re.MULTILINE)
     # do not escape "[]*~<.()"
-    md = re.sub(r'\\([\[\]\*\~\<\.\(\)])', '\g<1>', md)
+    md = re.sub(r'\\([\[\]\*\~\<\.\(\)])', r'\g<1>', md)
     # do not excape ">#" except at start of line (interpreted as quote)
-    md = re.sub(r'(?<!^)\\([\>\#])', '\g<1>', md, flags=re.MULTILINE)
-    # -[]*>#()
-    # \`_{}+.!
+    md = re.sub(r'(?<!^)\\([\>\#])', r'\g<1>', md, flags=re.MULTILINE)
+    # -[]*>#().
+    # \`_{}+!
     return md
 
 
@@ -77,12 +77,15 @@ def get_sub_tables(table, depth=1):
 
 
 def split_md_table(table: pd.DataFrame, maxchar=MSG_MAX_CHAR - 4):
+    # TODO handle  where a single table row contains more than maxchar
     tables, start, stop = [], 0, 0
     while True:
         if stop == 0:
             md_table = table.iloc[start:].to_markdown(index=False)
         else:
             md_table = table.iloc[start:stop].to_markdown(index=False)
+        # shorten header separator
+        md_table = re.sub(r":(\-)\1{2,}", ":---", md_table)
 
         if len(md_table) > maxchar:
             stop -= 1
