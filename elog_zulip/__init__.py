@@ -100,7 +100,7 @@ class Elog:
         return f'[{file_.name}]({res["uri"]})'
 
     def entry_url(self, attributes):
-        return '/'.join([self.logbook._url, attributes['$@MID@$']])
+        return '/'.join([self.logbook._url.rstrip('/'), attributes['$@MID@$']])
 
     def _default_subject(self, attrs):
         subject = attrs.get('Subject', 'no subject')
@@ -108,12 +108,15 @@ class Elog:
 
     def _default_header(self, attrs):
         attrs = attrs.copy()
+        elog_url = self.entry_url(attrs)
+
         attrs.pop('Subject')
         attrs.pop('$@MID@$')
         attrs.pop('Author')
         attrs.pop('Encoding')
         ret = '```quote\n'
-        ret += f'Date: **`{attrs.pop("Date")}`**\n\n'
+        ret += f'Date: **`{attrs.pop("Date")}`**\n'
+        ret += f'elog: {elog_url}\n\n'
         for key, value in sorted(attrs.items()):
             ret += f'{key}: **{value}**\n' if value else f'{key}:\n'
         ret += '```\n'
