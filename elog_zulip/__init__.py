@@ -159,14 +159,16 @@ class Elog:
             if quote:
                 content = f'```quote plain\n{content}\n```'
 
+            placeholders = {}
             for placeholder, img in embedded_images:
                 # upload image
                 if uri := _handle_z_error(self.zulip.upload_file, img)['uri']:
-                    try:
-                        content = content.format(**{placeholder: f'[]({uri})'})
-                    except IndexError:
-                        print(content)
-                        print(placeholder)
+                    placeholders[placeholder] = f'[]({uri})'
+
+            try:
+                content = content.format(**placeholders)
+            except IndexError:
+                log.error(f'invalid image placeholders:\n{placeholders}')
 
             r = self._send_message(content, topic)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')

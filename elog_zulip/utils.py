@@ -167,8 +167,10 @@ def extract_embedded_images(html: str | BeautifulSoup):
             f.write(b64decode(data))
             f.name = img.attrs.get('alt', None) or f'image_{idx}.png'
             f.seek(0)
-            img.replace_with(f'{{image_{idx}}}')
-            images.append((f'image_{idx}', f))
+
+            img_id = str(uuid4())
+            img.replace_with(f'{{image_{img_id}}}')
+            images.append((f'image_{img_id}', f))
         else:
             print('Embedded image in elog entry:')
             print(img.attrs)
