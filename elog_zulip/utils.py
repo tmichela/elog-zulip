@@ -212,24 +212,7 @@ def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
     if remain:
         _add_part(remain)
 
-    # reassemble parts
-    # for p in assemble_strings(parts, maxchar=maxchar):
-    #     yield p
     return parts
-
-    # assembled, imgs = '', []
-    # for part, images in parts:
-    #     # TODO handle len(string) > maxchar
-    #     if (len(assembled) + len(part)) > maxchar:
-    #         if assembled:
-    #             yield assembled, imgs
-    #         assembled = part
-    #         imgs = images
-    #     else:
-    #         assembled += part + os.linesep
-    #         imgs.extend(images)
-    # if assembled:
-    #     yield assembled, imgs
 
 
 def retry(func=None, *, attempts=1, delay=0, exc=(Exception,)):
