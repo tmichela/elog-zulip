@@ -154,6 +154,25 @@ class Elog:
         prefix = env.from_string(prefix).render(attributes)
         topic = env.from_string(topic).render(attributes) or 'no topic'
 
+
+        # --- combine parts
+
+        parts = (f'{subject}\n{header if show_header else ""}{prefix}', [])
+        parts.extend(format_text(text))
+
+        # upload attachments
+        attachments_text = ''
+        for idx, attachment in enumerate(attachments, start=1):
+            log.info(f'New attachment: {attachment}')
+            if uri := self.upload(attachment):
+                attachments_text += f'\n[{idx}] {uri}'
+        if attachments_text:
+            parts.append(attachments_text)
+
+        # TODO combine parts and send to zulip
+
+        # --- /combine parts
+
         r = self._send_message(f'{subject}\n{header if show_header else ""}{prefix}', topic)
         for content, embedded_images in format_text(text):
             if quote:
