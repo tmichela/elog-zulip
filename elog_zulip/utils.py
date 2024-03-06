@@ -16,7 +16,7 @@ MD_LINE_WIDTH = 350
 MSG_MAX_CHAR = 10_000
 
 
-def html_to_md(html, columns=MD_LINE_WIDTH):
+def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     # remove [span, div] tags
     soup = BeautifulSoup(html, 'lxml')
     for tag in soup.find_all(['span', 'div']):
@@ -51,18 +51,18 @@ def split_string(string: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
         yield next_block
 
 
-def assemble_strings(strings: Collection[str], maxchar: int =MSG_MAX_CHAR) -> Iterator[str]:
+def assemble_strings(strings: Collection[str], maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
     """Assemble consecutive strings up to maxchar.
     """
     assembled = ''
     for string in strings:
         # TODO handle len(string) > maxchar
-        if len(assembled + string) > maxchar:
+        if (len(assembled) + len(string)) > maxchar:
             if assembled:
                 yield assembled
             assembled = string
         else:
-            assembled += os.linesep + string
+            assembled += string + os.linesep
     if assembled:
         yield assembled
 
@@ -76,7 +76,7 @@ def get_sub_tables(table, depth=1):
             yield sub_table
 
 
-def split_md_table(table: pd.DataFrame, maxchar=MSG_MAX_CHAR - 4):
+def split_md_table(table: pd.DataFrame, maxchar: int = MSG_MAX_CHAR - 4):
     # TODO handle  where a single table row contains more than maxchar
     tables, start, stop = [], 0, 0
     while True:
@@ -106,8 +106,8 @@ def table_to_md(table):
     sub_tables = []
     for st in get_sub_tables(table):
         tb_id = str(uuid4())
-        sub_tables.append((copy(st), tb_id))
-        st.replace_with(BeautifulSoup(f'<p>{{{tb_id}}}</p>', 'lxml').p)
+        sub_tables.append((copy(st), f'table_{tb_id}'))
+        st.replace_with(BeautifulSoup(f'<p>{{table_{tb_id}}}</p>', 'lxml').p)
 
     html = table.prettify()
     try:
@@ -178,7 +178,7 @@ def extract_embedded_images(html: str | BeautifulSoup):
     return soup, images
 
 
-def format_text(text, maxchar=MSG_MAX_CHAR):
+def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
     soup = BeautifulSoup(text, 'lxml')
 
     # split message in parts:
@@ -201,6 +201,8 @@ def format_text(text, maxchar=MSG_MAX_CHAR):
         table, table_images = extract_embedded_images(table)
         md_table = table_to_md(table)
 
+        # TODO check for md_table > maxchar
+
         if isinstance(md_table, str):
             parts.append((md_table, table_images))
         else:
@@ -210,9 +212,6 @@ def format_text(text, maxchar=MSG_MAX_CHAR):
     if remain:
         _add_part(remain)
 
-    # # reassemble parts
-    # for p in assemble_strings(parts, maxchar=maxchar):
-    #     yield p
     return parts
 
 

@@ -2,6 +2,7 @@
 """
 __version__ = "0.2.0"
 
+import os
 import warnings
 from argparse import ArgumentParser
 from io import BytesIO
@@ -136,7 +137,7 @@ class Elog:
         res = _handle_z_error(self.zulip.send_message, request)
         return res
 
-    def _publish(self, text, attributes, attachments):
+    def _publish(self, text, attributes, attachments, maxchar=10_000):
         header = self._default_header(attributes)
 
         attributes['EntryUrl'] = self.entry_url(attributes)
@@ -146,7 +147,6 @@ class Elog:
         subject = self.config.get('elog-subject', self._default_subject(attributes))
         prefix = self.config.get('elog-prefix', '')
         topic = self.config.get('zulip-topic', '')
-        quote = self.config.get('quote', False)
         show_header = self.config.get('show-header', True)
         # format subject, prefix and topic using jinja2
         env = jinja2.Environment()
@@ -154,24 +154,8 @@ class Elog:
         prefix = env.from_string(prefix).render(attributes)
         topic = env.from_string(topic).render(attributes) or 'no topic'
 
-        r = self._send_message(f'{subject}\n{header if show_header else ""}{prefix}', topic)
-        for content, embedded_images in format_text(text):
-            if quote:
-                content = f'```quote plain\n{content}\n```'
-
-            placeholders = {}
-            for placeholder, img in embedded_images:
-                # upload image
-                if uri := _handle_z_error(self.zulip.upload_file, img)['uri']:
-                    placeholders[placeholder] = f'[]({uri})'
-
-            try:
-                content = content.format(**placeholders)
-            except IndexError:
-                log.error(f'invalid image placeholders:\n{placeholders}')
-
-            r = self._send_message(content, topic)
-            log.info(f'New publication: {self.entry_url(attributes)} - {r}')
+        parts = [(f'{subject}\n{header if show_header else ""}{prefix}', [])]
+        parts.extend(format_text(text))
 
         # upload attachments
         attachments_text = ''
@@ -180,8 +164,45 @@ class Elog:
             if uri := self.upload(attachment):
                 attachments_text += f'\n[{idx}] {uri}'
         if attachments_text:
-            r = self._send_message(attachments_text, topic)
+            parts.append((attachments_text, []))
+
+        def _format(txt, **kwargs):
+            # the text might contain '{...}' which is in the original elog
+            # don't try to replace those
+            try:
+                return txt.format(**kwargs)
+            except IndexError:
+                log.error(f'invalid image placeholders:\n{kwargs}')
+                return txt
+            except KeyError as kerr:
+                key = kerr.args[0]
+                return _format(txt, **{key: f'{{{key}}}', **kwargs})
+
+        def _upload_embedded_images(txt, imgs):
+            placeholders = {}
+            for placeholder, img in imgs:
+                # upload image
+                if uri := _handle_z_error(self.zulip.upload_file, img)['uri']:
+                    placeholders[placeholder] = f'[]({uri})'
+            return _format(txt, **placeholders)
+
+        def _send_message(txt):
+            r = self._send_message(txt, topic)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
+
+        # combine parts and send to zulip
+        message = ''
+        for part, part_images in parts:
+            # TODO handle len(part) > maxchar
+            part = _upload_embedded_images(part, part_images)
+            if (len(message) + len(part)) > maxchar:
+                if message:
+                    _send_message(message)
+                message = part
+            else:
+                message += part + os.linesep
+        if message:
+            _send_message(message)
 
         # add entry to db
         data = {'entry_id': int(attributes["$@MID@$"]),
