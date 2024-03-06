@@ -168,7 +168,8 @@ class Elog:
 
         def _format(txt, **kwargs):
             # the text might contain '{...}' which is in the original elog
-            # don't try to replace those
+            # we try to handle it here, although it still may fail.
+            # TODO implement partial str.format?
             try:
                 return txt.format(**kwargs)
             except IndexError:
@@ -194,7 +195,8 @@ class Elog:
         message = ''
         for part, part_images in parts:
             # TODO handle len(part) > maxchar
-            part = _upload_embedded_images(part, part_images)
+            if part_images:
+                part = _upload_embedded_images(part, part_images)
             if (len(message) + len(part)) > maxchar:
                 if message:
                     _send_message(message)
