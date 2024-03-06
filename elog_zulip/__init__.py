@@ -154,7 +154,7 @@ class Elog:
         prefix = env.from_string(prefix).render(attributes)
         topic = env.from_string(topic).render(attributes) or 'no topic'
 
-        parts = (f'{subject}\n{header if show_header else ""}{prefix}', [])
+        parts = [(f'{subject}\n{header if show_header else ""}{prefix}', [])]
         parts.extend(format_text(text))
 
         # upload attachments
@@ -166,17 +166,25 @@ class Elog:
         if attachments_text:
             parts.append((attachments_text, []))
 
+        def _format(txt, **kwargs):
+            # the text might contain '{...}' which is in the original elog
+            # don't try to replace those
+            try:
+                return txt.format(**kwargs)
+            except IndexError:
+                log.error(f'invalid image placeholders:\n{kwargs}')
+                return txt
+            except KeyError as kerr:
+                key = kerr.args[0]
+                return _format(txt, **{key: f'{{{key}}}', **kwargs})
+
         def _upload_embedded_images(txt, imgs):
             placeholders = {}
             for placeholder, img in imgs:
                 # upload image
                 if uri := _handle_z_error(self.zulip.upload_file, img)['uri']:
                     placeholders[placeholder] = f'[]({uri})'
-            try:
-                txt = txt.format(**placeholders)
-            except IndexError:
-                log.error(f'invalid image placeholders:\n{placeholders}')
-            return txt
+            return _format(txt, **placeholders)
 
         def _send_message(txt):
             r = self._send_message(txt, topic)

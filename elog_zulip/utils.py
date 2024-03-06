@@ -106,8 +106,8 @@ def table_to_md(table):
     sub_tables = []
     for st in get_sub_tables(table):
         tb_id = str(uuid4())
-        sub_tables.append((copy(st), tb_id))
-        st.replace_with(BeautifulSoup(f'<p>{{{tb_id}}}</p>', 'lxml').p)
+        sub_tables.append((copy(st), f'table_{tb_id}'))
+        st.replace_with(BeautifulSoup(f'<p>{{table_{tb_id}}}</p>', 'lxml').p)
 
     html = table.prettify()
     try:
