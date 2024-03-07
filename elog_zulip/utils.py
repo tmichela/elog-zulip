@@ -28,8 +28,8 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
 
     # do not escape '-' at begining of lines (likely bullet points)
     md = re.sub(r'^(\s*)\\-', r'\g<1>-', md, flags=re.MULTILINE)
-    # do not escape "[]*~<.()"
-    md = re.sub(r'\\([\[\]\*\~\<\.\(\)])', r'\g<1>', md)
+    # do not escape "[]*~<.()_"
+    md = re.sub(r'\\([\[\]\*\~\<\.\(\)\_])', r'\g<1>', md)
     # do not excape ">#" except at start of line (interpreted as quote)
     md = re.sub(r'(?<!^)\\([\>\#])', r'\g<1>', md, flags=re.MULTILINE)
     # -[]*>#().
@@ -67,6 +67,10 @@ def assemble_strings(strings: Collection[str], maxchar: int = MSG_MAX_CHAR) -> I
         yield assembled
 
 
+def escape_curly_brackets(text: str):
+    return text.replace('{', '{{').replace('}', '}}')
+
+
 def get_sub_tables(table, depth=1):
     """Get all sub tables at level `depth`.
     """
@@ -97,17 +101,19 @@ def split_md_table(table: pd.DataFrame, maxchar: int = MSG_MAX_CHAR - 4):
     return tables
 
 
-def table_to_md(table):
+def table_to_md(table: BeautifulSoup) -> str:
     """Convert tables in html to markdown format.
 
     Tables here can be quoted elog entries or actual tables.
     """
     table = copy(table)
+
     sub_tables = []
     for st in get_sub_tables(table):
         tb_id = str(uuid4())
-        sub_tables.append((copy(st), f'table_{tb_id}'))
-        st.replace_with(BeautifulSoup(f'<p>{{table_{tb_id}}}</p>', 'lxml').p)
+        escaped_st = BeautifulSoup(escape_curly_brackets(str(st)), 'lxml')
+        sub_tables.append((escaped_st, f'table_{tb_id}'))
+        st.replace_with(f'{{table_{tb_id}}}')
 
     html = table.prettify()
     try:
@@ -124,16 +130,13 @@ def table_to_md(table):
         text = html_to_md(str(text))
         ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
         if sub_tables:
-            def _format(**kwargs):
-                try:
-                    placeholders = {id_: table_to_md(st) for st, id_ in sub_tables}
-                    placeholders.update(kwargs)
-                    return ret.format(**placeholders)
-                except KeyError as kerr:
-                    key = kerr.args[0]
-                    return _format(**{key: f'{{{key}}}', **kwargs})
-
-            ret = _format()
+            ph = {}
+            for st, id_ in sub_tables:
+                tb = table_to_md(st)
+                if isinstance(tb, list):
+                    tb = '\n'.join(tb)
+                ph[id_] = tb
+            ret = ret.format(**ph)
         return ret
     else:
         df.dropna(how='all', inplace=True)
@@ -146,16 +149,19 @@ def table_to_md(table):
         return f"\n{df.to_markdown(index=False)}\n"
 
 
-def extract_embedded_images(html: str | BeautifulSoup):
+def extract_embedded_images(html: str | BeautifulSoup) -> BeautifulSoup:
     """extract embedded images from an html string
 
     Returns:
         Tuple[BeautifulSoup, List[str, BytesIO]]: trimmed html and list of images
     """
-    if isinstance(html, str):
-        soup = BeautifulSoup(html, 'lxml')
-    else:
-        soup = html
+    if not isinstance(html, str):
+        html = str(html)
+
+    # Escape curly braces in html content
+    html = escape_curly_brackets(html)
+
+    soup = BeautifulSoup(html, 'lxml')
 
     images = []
     for idx, img in enumerate(soup.find_all('img')):
