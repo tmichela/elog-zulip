@@ -5,7 +5,7 @@ from copy import copy
 from functools import partial, wraps
 from io import BytesIO
 from time import sleep
-from typing import Collection, Iterator
+from typing import Collection, Iterator, Tuple, List
 from uuid import uuid4
 
 import pandas as pd
@@ -14,6 +14,10 @@ from pypandoc import convert_text
 
 MD_LINE_WIDTH = 350
 MSG_MAX_CHAR = 10_000
+
+
+def is_html(text: str) -> bool:
+    return bool(BeautifulSoup(text, 'html.parser').find())
 
 
 def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
@@ -184,7 +188,10 @@ def extract_embedded_images(html: str | BeautifulSoup) -> BeautifulSoup:
     return soup, images
 
 
-def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
+def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, List]]:
+    if not is_html(text):
+        return [(p, []) for p in split_string(text, maxchar=maxchar)]
+
     soup = BeautifulSoup(text, 'lxml')
 
     # split message in parts:
