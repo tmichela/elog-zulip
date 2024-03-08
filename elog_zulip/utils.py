@@ -17,32 +17,34 @@ MSG_MAX_CHAR = 10_000
 
 
 def is_html(text: str) -> bool:
-    return bool(BeautifulSoup(text, 'html.parser').find())
+    return bool(BeautifulSoup(text, "html.parser").find())
 
 
 def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     # remove [span, div] tags
-    soup = BeautifulSoup(html, 'lxml')
-    for tag in soup.find_all(['span', 'div']):
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup.find_all(["span", "div"]):
         tag.unwrap()
     html = str(soup)
 
     # convert html to markdown
-    md = convert_text(html, to='gfm', format='html', extra_args=[f'--columns={columns}'])
+    md = convert_text(
+        html, to="gfm", format="html", extra_args=[f"--columns={columns}"]
+    )
 
     # do not escape '-' at begining of lines (likely bullet points)
-    md = re.sub(r'^(\s*)\\-', r'\g<1>-', md, flags=re.MULTILINE)
+    md = re.sub(r"^(\s*)\\-", r"\g<1>-", md, flags=re.MULTILINE)
     # do not escape "[]*~<.()_"
-    md = re.sub(r'\\([\[\]\*\~\<\.\(\)\_])', r'\g<1>', md)
+    md = re.sub(r"\\([\[\]\*\~\<\.\(\)\_])", r"\g<1>", md)
     # do not excape ">#" except at start of line (interpreted as quote)
-    md = re.sub(r'(?<!^)\\([\>\#])', r'\g<1>', md, flags=re.MULTILINE)
+    md = re.sub(r"(?<!^)\\([\>\#])", r"\g<1>", md, flags=re.MULTILINE)
     # -[]*>#().
     # \`_{}+!
     return md
 
 
 def split_string(string: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
-    next_block = ''
+    next_block = ""
 
     for line in string.splitlines(keepends=True):
         # TODO handle case where line is > maxchar
@@ -55,10 +57,11 @@ def split_string(string: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
         yield next_block
 
 
-def assemble_strings(strings: Collection[str], maxchar: int = MSG_MAX_CHAR) -> Iterator[str]:
-    """Assemble consecutive strings up to maxchar.
-    """
-    assembled = ''
+def assemble_strings(
+    strings: Collection[str], maxchar: int = MSG_MAX_CHAR
+) -> Iterator[str]:
+    """Assemble consecutive strings up to maxchar."""
+    assembled = ""
     for string in strings:
         # TODO handle len(string) > maxchar
         if (len(assembled) + len(string)) > maxchar:
@@ -72,12 +75,11 @@ def assemble_strings(strings: Collection[str], maxchar: int = MSG_MAX_CHAR) -> I
 
 
 def escape_curly_brackets(text: str):
-    return text.replace('{', '{{').replace('}', '}}')
+    return text.replace("{", "{{").replace("}", "}}")
 
 
 def get_sub_tables(table, depth=1):
-    """Get all sub tables at level `depth`.
-    """
+    """Get all sub tables at level `depth`."""
     current_depth = len(table.find_parents("table"))
     for sub_table in table.find_all("table"):
         if (len(sub_table.find_parents("table")) - current_depth) == depth:
@@ -98,7 +100,7 @@ def split_md_table(table: pd.DataFrame, maxchar: int = MSG_MAX_CHAR - 4):
         if len(md_table) > maxchar:
             stop -= 1
         else:
-            tables.append(f'\n{md_table}\n')
+            tables.append(f"\n{md_table}\n")
             if stop == 0:
                 break
             start, stop = stop, 0
@@ -115,9 +117,9 @@ def table_to_md(table: BeautifulSoup) -> str:
     sub_tables = []
     for st in get_sub_tables(table):
         tb_id = str(uuid4())
-        escaped_st = BeautifulSoup(escape_curly_brackets(str(st)), 'lxml')
-        sub_tables.append((escaped_st, f'table_{tb_id}'))
-        st.replace_with(f'{{table_{tb_id}}}')
+        escaped_st = BeautifulSoup(escape_curly_brackets(str(st)), "lxml")
+        sub_tables.append((escaped_st, f"table_{tb_id}"))
+        st.replace_with(f"{{table_{tb_id}}}")
 
     html = table.prettify()
     try:
@@ -126,10 +128,10 @@ def table_to_md(table: BeautifulSoup) -> str:
         # failed finding a table
         return f"```quote\n{html_to_md(html)}\n```\n"
 
-    if df.columns.size == 1 and re.match(r'^.*? wrote:$', df.columns[0]):
+    if df.columns.size == 1 and re.match(r"^.*? wrote:$", df.columns[0]):
         # this table contains quote(s)
         # we manually parse the table, as pandas does not retain cells formatting
-        author, text = table.find_all('td')[:2]
+        author, text = table.find_all("td")[:2]
         author = html_to_md(str(author))
         text = html_to_md(str(text))
         ret = f"```quote\n**{author.strip()}**\n{text}\n```\n"
@@ -138,16 +140,16 @@ def table_to_md(table: BeautifulSoup) -> str:
             for st, id_ in sub_tables:
                 tb = table_to_md(st)
                 if isinstance(tb, list):
-                    tb = '\n'.join(tb)
+                    tb = "\n".join(tb)
                 ph[id_] = tb
             ret = ret.format(**ph)
         return ret
     else:
-        df.dropna(how='all', inplace=True)
-        df.fillna('', inplace=True)
+        df.dropna(how="all", inplace=True)
+        df.fillna("", inplace=True)
 
         # split table if not in a quote
-        if len(table.find_parents('table')) == 0:
+        if len(table.find_parents("table")) == 0:
             return split_md_table(df)
 
         return f"\n{df.to_markdown(index=False)}\n"
@@ -165,24 +167,24 @@ def extract_embedded_images(html: str | BeautifulSoup) -> BeautifulSoup:
     # Escape curly braces in html content
     html = escape_curly_brackets(html)
 
-    soup = BeautifulSoup(html, 'lxml')
+    soup = BeautifulSoup(html, "lxml")
 
     images = []
-    for idx, img in enumerate(soup.find_all('img')):
-        if not (src := img.attrs.get('src')):
+    for idx, img in enumerate(soup.find_all("img")):
+        if not (src := img.attrs.get("src")):
             continue
-        metadata, _, data = src.partition(',')
-        if metadata == 'data:image/png;base64':
+        metadata, _, data = src.partition(",")
+        if metadata == "data:image/png;base64":
             f = BytesIO()
             f.write(b64decode(data))
-            f.name = img.attrs.get('alt', None) or f'image_{idx}.png'
+            f.name = img.attrs.get("alt", None) or f"image_{idx}.png"
             f.seek(0)
 
             img_id = str(uuid4())
-            img.replace_with(f'{{image_{img_id}}}')
-            images.append((f'image_{img_id}', f))
+            img.replace_with(f"{{image_{img_id}}}")
+            images.append((f"image_{img_id}", f))
         else:
-            print('Embedded image in elog entry:')
+            print("Embedded image in elog entry:")
             print(img.attrs)
 
     return soup, images
@@ -192,12 +194,13 @@ def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, L
     if not is_html(text):
         return [(p, []) for p in split_string(text, maxchar=maxchar)]
 
-    soup = BeautifulSoup(text, 'lxml')
+    soup = BeautifulSoup(text, "lxml")
 
     # split message in parts:
     #   - separate tables from the messages to be rendered with pandas
     #   - split text in multiple messages if it is too long
     parts = []
+
     def _add_part(_part):
         _part, images = extract_embedded_images(_part)
         for p in split_string(html_to_md(str(_part)), maxchar=maxchar):
@@ -208,7 +211,7 @@ def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, L
 
     remain = text
     for table in get_sub_tables(soup, depth=0):
-        part, _, remain = str(BeautifulSoup(remain, 'lxml')).partition(str(table))
+        part, _, remain = str(BeautifulSoup(remain, "lxml")).partition(str(table))
         _add_part(part)
 
         table, table_images = extract_embedded_images(table)
