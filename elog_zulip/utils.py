@@ -124,6 +124,14 @@ def table_to_md(table: BeautifulSoup) -> str:
     html = table.prettify()
     try:
         df = pd.read_html(html, header=0)[0]
+        # clean empty fields in header
+        header = []
+        for elem in df.columns.values:
+            if re.match(r"^Unnamed: \d+$", elem):
+                header.append('')
+            else:
+                header.append(elem)
+        df.columns = header
     except (IndexError, ValueError):
         # failed finding a table
         return f"```quote\n{html_to_md(html)}\n```\n"
