@@ -163,7 +163,7 @@ def table_to_md(table: BeautifulSoup) -> str:
         return f"\n{df.to_markdown(index=False)}\n"
 
 
-def extract_embedded_images(html: str | BeautifulSoup) -> BeautifulSoup:
+def extract_embedded_images(html) -> BeautifulSoup:
     """extract embedded images from an html string
 
     Returns:
@@ -191,6 +191,11 @@ def extract_embedded_images(html: str | BeautifulSoup) -> BeautifulSoup:
             img_id = str(uuid4())
             img.replace_with(f"{{image_{img_id}}}")
             images.append((f"image_{img_id}", f))
+        elif not metadata.startswith('http'):
+            # we assume this is an attachment url in the elog
+            img_id = str(uuid4())
+            img.replace_with(f"{{image_{img_id}}}")
+            images.append((f"image_{img_id}", metadata))
         else:
             print("Embedded image in elog entry:")
             print(img.attrs)

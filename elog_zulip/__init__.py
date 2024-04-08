@@ -6,6 +6,7 @@ import os
 import warnings
 from argparse import ArgumentParser
 from io import BytesIO
+from pathlib import Path
 from time import sleep
 from typing import Dict, List, Tuple
 
@@ -98,7 +99,7 @@ class Elog:
 
         # upload document to zulip
         res = _handle_z_error(self.zulip.upload_file, file_)
-        return f'[{file_.name}]({res["uri"]})'
+        return file_.name, res["uri"]
 
     def entry_url(self, attributes):
         return '/'.join([self.logbook._url.rstrip('/'), attributes['$@MID@$']])
@@ -161,17 +162,23 @@ class Elog:
         attachments_text = ''
         for idx, attachment in enumerate(attachments, start=1):
             log.info(f'New attachment: {attachment}')
-            if uri := self.upload(attachment):
-                attachments_text += f'\n[{idx}] {uri}'
+            fname, uri = self.upload(attachment)
+            attachments_text += f'\n[{idx}] [{fname}]({uri})'
         if attachments_text:
             parts.append((attachments_text, []))
 
         def _upload_embedded_images(txt, imgs):
             placeholders = {}
             for placeholder, img in imgs:
-                # upload image
-                if uri := _handle_z_error(self.zulip.upload_file, img)['uri']:
-                    placeholders[placeholder] = f'[]({uri})'
+                if isinstance(img, str):
+                    # download attachment from elog
+                    url = Path(img)
+                    while len(url.suffixes) > 1:
+                        url = url.with_suffix('')
+                    _, uri = self.upload(self.logbook._url + str(url))
+                else:
+                    uri = _handle_z_error(self.zulip.upload_file, img)['uri']
+                placeholders[placeholder] = f'[]({uri})'              
             return txt.format(**placeholders)
 
         def _send_message(txt):
