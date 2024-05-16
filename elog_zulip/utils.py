@@ -34,11 +34,11 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
 
     # do not escape '-' at begining of lines (likely bullet points)
     md = re.sub(r"^(\s*)\\-", r"\g<1>-", md, flags=re.MULTILINE)
-    # do not escape "[]*~<.()_"
-    md = re.sub(r"\\([\[\]\*\~\<\.\(\)\_])", r"\g<1>", md)
+    # do not escape "[]*~<.()_|"
+    md = re.sub(r"\\([\[\]\*\~\<\.\(\)\_\|])", r"\g<1>", md)
     # do not excape ">#" except at start of line (interpreted as quote)
     md = re.sub(r"(?<!^)\\([\>\#])", r"\g<1>", md, flags=re.MULTILINE)
-    # -[]*>#().
+    # -[]*>#().|
     # \`_{}+!
     return md
 
@@ -150,7 +150,14 @@ def table_to_md(table: BeautifulSoup) -> str:
                 if isinstance(tb, list):
                     tb = "\n".join(tb)
                 ph[id_] = tb
-            ret = ret.format(**ph)
+
+            def _format(txt, **kwargs):
+                try:
+                    return txt.format(**kwargs)
+                except KeyError as kerr:
+                    kwargs[kerr.args[0]] = f'{{{kerr.args[0]}}}'
+                    return _format(txt, **kwargs)
+            ret = _format(ret, **ph)
         return ret
     else:
         df.dropna(how="all", inplace=True)
