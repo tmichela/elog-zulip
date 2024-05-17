@@ -3,6 +3,7 @@
 __version__ = "0.2.0"
 
 import os
+import re
 import warnings
 from argparse import ArgumentParser
 from io import BytesIO
@@ -18,7 +19,7 @@ from elog import Logbook, LogbookMessageRejected, LogbookServerProblem
 from loguru import logger as log
 
 from .mock import FakeDB, FakeZulip
-from .utils import format_text, retry
+from .utils import format_text, retry, _log_error
 
 # TODO split large quotes
 # TODO insert images in text when placeholders are present
@@ -156,13 +157,15 @@ class Elog:
         topic = env.from_string(topic).render(attributes) or 'no topic'
 
         parts = [(f'{subject}\n{header if show_header else ""}{prefix}', [])]
-        parts.extend(format_text(text))
+        parts.extend(format_text(text, attachments))
 
         # upload attachments
         attachments_text = ''
+        zulip_attachments = []
         for idx, attachment in enumerate(attachments, start=1):
             log.info(f'New attachment: {attachment}')
             fname, uri = self.upload(attachment)
+            zulip_attachments.append((fname, uri))
             attachments_text += f'\n[{idx}] [{fname}]({uri})'
         if attachments_text:
             parts.append((attachments_text, []))
@@ -170,18 +173,41 @@ class Elog:
         def _upload_embedded_images(txt, imgs):
             placeholders = {}
             for placeholder, img in imgs:
-                if isinstance(img, str):
+                if isinstance(img, int):
+                    # reference to an attachement
+                    uri = zulip_attachments[img][1]
+                elif isinstance(img, str):
                     # download attachment from elog
                     url = Path(img)
                     while len(url.suffixes) > 1:
                         url = url.with_suffix('')
-                    _, uri = self.upload(self.logbook._url + str(url))
+                    try:
+                        _, uri = self.upload(self.logbook._url + str(url))
+                    except LogbookMessageRejected:
+                        # image url is not something saved in the elog
+                        _log_error(f'Could not download attachment: {img}')
+                        uri = None
                 else:
                     uri = _handle_z_error(self.zulip.upload_file, img)['uri']
-                placeholders[placeholder] = f'[]({uri})'              
+                placeholders[placeholder] = f'[]({uri})' if uri is not None else ''
             return txt.format(**placeholders)
 
+        def _replace_attachments_in_table(txt):
+            pattern = r'^.*\|\s*(\[.*\]\((\/user_uploads\/[^)]+)\))\s*\|.*$'
+
+            output = []
+            for line in txt.splitlines():
+                if (match := re.match(pattern, line)) is not None:
+                    att = match.group(2)
+                    for idx, aline in enumerate(attachments_text.splitlines()):
+                        if att in aline:
+                            line = line.replace(match.group(1), f'[{idx}]')
+                            break
+                output.append(line)
+            return '\n'.join(output)
+
         def _send_message(txt):
+            txt = _replace_attachments_in_table(txt)
             r = self._send_message(txt, topic)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
 
