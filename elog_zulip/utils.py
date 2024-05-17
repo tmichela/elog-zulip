@@ -2,6 +2,7 @@ import os
 import re
 from base64 import b64decode
 from copy import copy
+from datetime import datetime
 from functools import partial, wraps
 from io import BytesIO
 from time import sleep
@@ -9,11 +10,17 @@ from typing import Collection, Iterator, Tuple, List
 from uuid import uuid4
 
 import pandas as pd
+import requests
 from bs4 import BeautifulSoup
 from pypandoc import convert_text
 
 MD_LINE_WIDTH = 350
 MSG_MAX_CHAR = 10_000
+
+
+def _log_error(error):
+    with open('./elog-zulip-error.log', 'a') as f:
+        f.write(f'{datetime.now().isoformat(timespec="seconds")}:{error}\n')
 
 
 def is_html(text: str) -> bool:
@@ -170,7 +177,7 @@ def table_to_md(table: BeautifulSoup) -> str:
         return f"\n{df.to_markdown(index=False)}\n"
 
 
-def extract_embedded_images(html) -> BeautifulSoup:
+def extract_embedded_images(html, attachments) -> BeautifulSoup:
     """extract embedded images from an html string
 
     Returns:
@@ -183,34 +190,71 @@ def extract_embedded_images(html) -> BeautifulSoup:
     html = escape_curly_brackets(html)
 
     soup = BeautifulSoup(html, "lxml")
-
     images = []
+
+    def _buffer(img_data, name):
+        f = BytesIO()
+        f.write(img_data)
+        f.name = name
+        f.seek(0)
+        return f
+
+    def _add_image(image, image_id, data):
+        image.replace_with(f"{{image_{image_id}}}")
+        images.append((f"image_{image_id}", data))
+
     for idx, img in enumerate(soup.find_all("img")):
         if not (src := img.attrs.get("src")):
+            _log_error(f' Invalid image src: {img}')
             continue
-        metadata, _, data = src.partition(",")
-        if metadata == "data:image/png;base64":
-            f = BytesIO()
-            f.write(b64decode(data))
-            f.name = img.attrs.get("alt", None) or f"image_{idx}.png"
-            f.seek(0)
 
-            img_id = str(uuid4())
-            img.replace_with(f"{{image_{img_id}}}")
-            images.append((f"image_{img_id}", f))
-        elif not metadata.startswith('http'):
+        img_id = str(uuid4())
+
+        parent = img.parent
+        if parent.name == 'a' and list(parent.children) == [img]:
+            # this is a link to an attachement
+            # find attachment index
+            match = re.match(r'^(.*)\?.*lb=([^&]+).*$', parent.attrs['href'])
+            if match is None:
+                _log_error(f'could not match referenced attachment: {parent}')
+            else:
+                name = match[1].replace('/', '_')
+                logbook = match[2]
+                url = f'https://in.xfel.eu/elog/{logbook}/{name}'
+                try:
+                    index = attachments.index(url)
+                except ValueError:
+                    # we still assume it's an attachment but not attached to this elog
+                    # this will fail later if not downloadable
+                    _add_image(parent, img_id, name)
+                else:
+                    parent.replace_with(f'{{attachment_{index}}}')
+                    images.append((f'attachment_{index}', index))
+        elif src.startswith("data:image/png;base64"):
+            metadata, _, data = src.partition(',')
+            f = _buffer(b64decode(data), img.attrs.get("alt", None) or f"image_{idx}.png")
+            _add_image(img, img_id, f)
+        elif not src.startswith('http'):
             # we assume this is an attachment url in the elog
-            img_id = str(uuid4())
-            img.replace_with(f"{{image_{img_id}}}")
-            images.append((f"image_{img_id}", metadata))
+            _add_image(img, img_id, src)
         else:
-            print("Embedded image in elog entry:")
-            print(img.attrs)
+            with open('./elog-zulip-info.log', 'a') as f:
+                f.write(f'{datetime.now().isoformat(timespec="seconds")}: external image: {img}\n')
+            # try downloading
+            res = requests.get(src)
+
+            if res.status_code == 200:
+                f = _buffer(res.content, src.rpartition('/')[-1])
+                _add_image(img, img_id, f)
+            else:
+                # replace img balise with empty string
+                _log_error(f'Could not download img: {img}')
+                img.replace_with("")
 
     return soup, images
 
 
-def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, List]]:
+def format_text(text: str, attachments: List[str], maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, List]]:
     if not is_html(text):
         return [(p, []) for p in split_string(text, maxchar=maxchar)]
 
@@ -222,7 +266,7 @@ def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, L
     parts = []
 
     def _add_part(_part):
-        _part, images = extract_embedded_images(_part)
+        _part, images = extract_embedded_images(_part, attachments)
         for p in split_string(html_to_md(str(_part)), maxchar=maxchar):
             if not p.strip():
                 continue
@@ -234,7 +278,7 @@ def format_text(text: str, maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, L
         part, _, remain = str(BeautifulSoup(remain, "lxml")).partition(str(table))
         _add_part(part)
 
-        table, table_images = extract_embedded_images(table)
+        table, table_images = extract_embedded_images(table, attachments)
         md_table = table_to_md(table)
 
         # TODO check for md_table > maxchar
