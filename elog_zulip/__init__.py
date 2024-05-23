@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from time import sleep
 from typing import Dict, List, Tuple
+from urllib.parse import quote
 
 import dataset
 import jinja2
@@ -164,6 +165,9 @@ class Elog:
         zulip_attachments = []
         for idx, attachment in enumerate(attachments, start=1):
             log.info(f'New attachment: {attachment}')
+            # replace special characters in url string
+            attachment = quote(attachment, safe='/:')
+            log.debug(f'Attachment url parsed: {attachment}')
             fname, uri = self.upload(attachment)
             zulip_attachments.append((fname, uri))
             attachments_text += f'\n[{idx}] [{fname}]({uri})'
