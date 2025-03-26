@@ -22,3 +22,7 @@ class FakeZulip:
 
     def upload_file(self, file):
         return {'result': 'success', 'uri': 'https://example.com'}
+
+    def get_profile(self):
+        log.info(f'Getting profile')
+        return {'result': 'success', 'user_id': 1, 'full_name': 'Example example', 'email': 'me@example.com'}
