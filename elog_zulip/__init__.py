@@ -107,7 +107,7 @@ class Elog:
                 log.error(f'Error while querying the users: {response["msg"]}')
                 sys.exit(1)
 
-        with open(self.config.get('user-map'), newline='') as f:
+        with open(self.config.get('users-map'), newline='') as f:
             data = list(csv.reader(f))
 
         if len(data) < 2:
