@@ -2,13 +2,12 @@
 """
 __version__ = "0.2.0"
 
+import csv
+import datetime
 import os
 import re
 import sys
 import warnings
-
-import csv
-import datetime
 from argparse import ArgumentParser
 from io import BytesIO
 from pathlib import Path
