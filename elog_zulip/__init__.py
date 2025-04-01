@@ -86,53 +86,55 @@ class Elog:
             self._db = dataset.connect(config['database'])
             self.entry = self._db[self.table]
 
-            self._fallback_user = self.zulip.get_profile()['email']
+        self._fallback_user = self.zulip.get_profile()['email']
 
-            if self.impersonate:
-                if users_map_path:
+        self._users_map = {}
+        if self.impersonate:
+            if not users_map_path:
+                log.error(f'Cannot proceed without a users map')
+                sys.exit(1)
+            self._load_elog_user_map()
 
-                    existing_users = {}
+    def _load_elog_user_map(self):
+        can_create_users = self.config.get('can-create-users', False)
+        existing_users = {}
 
-                    if not can_create_users:
+        if not can_create_users:
+            response = self.zulip.get_members()
+            if response['result'] == 'success':
+                existing_users = { m['email'] : m for m in response['members'] }
+            else:
+                log.error(f'Error while querying the users: {response["msg"]}')
+                sys.exit(1)
 
-                        response = self.zulip.get_members()
+        with open(self.config.get('user-map'), newline='') as f:
+            data = list(csv.reader(f))
 
-                        if response['result'] == 'success':
-                            existing_users = { m['email'] : m for m in response['members'] }
-                        else:
-                            log.error(f'Error while querying the users: {response["msg"]}')
-                            sys.exit(1)
+        if len(data) < 2:
+            log.error(f'The provided user map is empty. Please provide a valid one.')
+            sys.exit(1)
 
+        header = data[0]
 
-                    with open(users_map_path, newline='') as f:
+        if not ('elog_user' in header and 'email' in header):
+            log.error(
+                f'The users map needs to have an header with two fields:'
+                '"elog_user" (name of the user in the elog) and "email" (email of '
+                 'the user in the destination zulip system)')
+            sys.exit(1)
 
-                        data = list(csv.reader(f))
-                        h = data[0]
-                        self._users_map = {}
+        for d in data[1:]:
+            user_dict = dict(zip(header, d))
 
-                        if len(data) < 2:
-                            log.error(f'The provided user map is empty. Please provide a valid one.')
-                            sys.exit(1)
+            if not can_create_users and user_dict['email'] not in existing_users:
+                log.info(f'User {user_dict["email"]} is not present in the server skipping.')
+                continue
 
-                        if not ('elog_user' in h and 'email' in h):
-                            log.error(f'The users map needs to have an header with two fields: "elog_user" (name of the user in the elog) and "email" (email of the user in the destination zulip system)')
-                            sys.exit(1)
+            self._users_map[user_dict['elog_user']] = user_dict
 
-                        for d in data[1:]:
-                            user_dict = dict(zip(h, d))
-
-                            if not can_create_users and user_dict['email'] not in existing_users:
-                                log.info(f'User {user_dict["email"]} is not present in the server skipping.')
-                                continue
-
-                            self._users_map[user_dict['elog_user']] = user_dict
-
-                        if len(self._users_map) == 0:
-                            log.error(f'No user found in the user map. Please check that you are using the correct user map for this elog.')
-                            sys.exit(1)
-                else:
-                    log.error(f'Cannot proceed without a users map')
-                    sys.exit(1)
+        if len(self._users_map) == 0:
+            log.error(f'No user found in the user map. Please check that you are using the correct user map for this elog.')
+            sys.exit(1)
 
     def _saved_entries(self):
         return {int(e['entry_id']) for e in self.entry.find(order_by=['entry_id']) or ()}
