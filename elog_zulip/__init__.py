@@ -86,14 +86,30 @@ class Elog:
             self._db = dataset.connect(config['database'])
             self.entry = self._db[self.table]
 
-        self._fallback_user = self.zulip.get_profile()['email']
+        self._fallback_user = config.get('default-impersonator', self.zulip.get_profile()['email'])
+
+        if not self._get_user_by_email(self._fallback_user):
+            log.error(f'The impersonation default user {self._fallback_user} does not exist on the server.')
+            sys.exit(1)
 
         self._users_map = {}
         if self.impersonate:
             if not users_map_path:
-                log.error(f'Cannot proceed without a users map')
+                log.error('Cannot proceed without a users map')
                 sys.exit(1)
             self._load_elog_user_map()
+
+    def _get_user_by_email(self, user):
+        response = self.zulip.call_endpoint(
+            url=f"/users/{user}",
+            method="GET",
+        )
+
+        if response['result'] == 'success':
+            return response['user']
+
+        return {}
+
 
     def _load_elog_user_map(self):
         can_create_users = self.config.get('can-create-users', False)
