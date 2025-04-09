@@ -59,6 +59,13 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     md = re.sub(r"(?<!^)\\([\>\#])", r"\g<1>", md, flags=re.MULTILINE)
     # -[]*>#().|
     # \`_{}+!
+
+    # remove < > from bare links that is part of github markdown but not of zulip markdown
+    md = re.sub(r"\<(https?\:\/\/[^\>]+)\>", r"\g<1>", md, flags=re.MULTILINE)
+
+    # remove multiple < > from emails
+    md = re.sub(r"\<+([^@\s]+\@[^\>\s]+)\>+", r"<\g<1>>", md, flags=re.MULTILINE)
+
     return md
 
 
