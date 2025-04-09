@@ -66,6 +66,9 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     # remove multiple < > from emails
     md = re.sub(r"\<+([^@\s]+\@[^\>\s]+)\>+", r"<\g<1>>", md, flags=re.MULTILINE)
 
+    # remove empty HTML <!-- --> comments that are added from the conversion to github markdown
+    md = re.sub(r"^\s*\<\!--\s*--\>\s*$", "", md, flags=re.MULTILINE)
+
     return md
 
 
