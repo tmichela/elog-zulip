@@ -265,10 +265,15 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
         else:
             with open('./elog-zulip-info.log', 'a') as f:
                 f.write(f'{datetime.now().isoformat(timespec="seconds")}: external image: {img}\n')
-            # try downloading
-            res = requests.get(src)
 
-            if res.status_code == 200:
+            res = None
+            try:
+                # try downloading
+                res = requests.get(src)
+            except requests.exceptions.TooManyRedirects as e:
+                _log_error(f'Too many redirects while downloading img: {img}')
+
+            if res is not None and res.status_code == 200:
                 f = _buffer(res.content, src.rpartition('/')[-1])
                 _add_image(img, img_id, f)
             else:
