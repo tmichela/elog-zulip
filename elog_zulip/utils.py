@@ -28,9 +28,9 @@ def is_html(text: str) -> bool:
 
 
 def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
-    # remove [span, div] tags
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.find_all(["span", "div"]):
+    # remove [span, div, u] tags
+    for tag in soup.find_all(["span", "div", "u"]):
         tag.unwrap()
     html = str(soup)
 
