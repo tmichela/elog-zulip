@@ -252,12 +252,12 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
                 else:
                     parent.replace_with(f'{{attachment_{index}}}')
                     images.append((f'attachment_{index}', index))
-        elif src.startswith("data:image/png;base64"):
-            metadata, _, data = src.partition(',')
+        elif m := re.match(r'data:image/(png|jpe?g);base64,', src):
+            data = src[m.span()[1]:]
             alt = img.attrs.get('alt', None)
             if alt == src:
                 alt = None
-            f = _buffer(b64decode(data), alt or f"image_{idx}.png")
+            f = _buffer(b64decode(data), alt or f"image_{idx}.{m.group(1)}")
             _add_image(img, img_id, f)
         elif not src.startswith('http'):
             # we assume this is an attachment url in the elog
