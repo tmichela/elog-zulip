@@ -32,7 +32,19 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     # remove [span, div, u] tags
     for tag in soup.find_all(["span", "div", "u"]):
         tag.unwrap()
+
+    for tag in soup.find_all(["a"]):
+        href = tag['href']
+
+        if href == '':
+            # removes links with empty href
+            tag.unwrap()
+        else:
+            # remove attributes from a tags as it prevents proper conversion to markdown links
+            tag.attrs = {'href': href}
+
     html = str(soup)
+
 
     # convert html to markdown
     md = convert_text(
