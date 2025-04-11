@@ -63,7 +63,6 @@ class Elog:
         self.stream = config['zulip-stream']
         self.impersonate = config.get('use-elog-user', False)
         users_map_path = config.get('users-map')
-        can_create_users = config.get('can-create-users', False)
         self.rewrite_datetime = config.get('use-elog-datetime', False)
         self._fallback_user = 'me@example.com'
         self.config = config
@@ -72,7 +71,6 @@ class Elog:
         if dry_run:
             self.entry = FakeDB()
             self.zulip = FakeZulip()
-            can_create_users = True
         else:
             # zulip client
             self.zulip = zulip.Client(
