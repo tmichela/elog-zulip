@@ -110,7 +110,7 @@ class Elog:
 
 
     def _load_elog_user_map(self):
-        can_create_users = self.config.get('can-create-users', False)
+        can_create_users = self.config.get('can-create-users', self.dry_run)
         existing_users = {}
 
         if not can_create_users:
