@@ -33,10 +33,10 @@ from .utils import format_text, retry, _log_error
 __all__ = ['Elog']
 
 
-def _handle_z_error(caller, *args):
+def _handle_z_error(caller, *args, **kwargs):
     """Handles Zulip errors.
     """
-    res = caller(*args)
+    res = caller(*args, **kwargs)
     if res['result'] == 'success':
         if param := res.get('ignored_parameters_unsupported'):
             log.warning(f'Ignored unsupported parameters: {param}')
@@ -48,7 +48,7 @@ def _handle_z_error(caller, *args):
         wait = 1 + res["retry-after"]
         log.info(f'Zulip: {res["msg"]}, waiting {wait}')
         sleep(wait)
-        return _handle_z_error(caller, *args)
+        return _handle_z_error(caller, *args, **kwargs)
     raise Exception(res.get('msg', res))
 
 
