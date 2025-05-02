@@ -121,11 +121,10 @@ class Elog:
 
 
     def _load_elog_user_map(self):
-        can_create_users = self.config.get('can-create-users', self.dry_run)
         existing_users = {}
 
-        if not can_create_users:
-            response = self.zulip.get_members()
+        if not self.can_create_users:
+            response = _handle_z_error(self.zulip.get_members)
             if response['result'] == 'success':
                 existing_users = { m['email'] : m for m in response['members'] }
             else:
@@ -258,6 +257,14 @@ class Elog:
             if a in self._users_map:
                 sender = self._users_map[a]['server_info']
 
+        is_user_new = sender['user_id'] is None
+
+        # TODO the way to fix this would be to create a dummy message and then delete it. There is no proper way to fix this,
+        #      so this would be a hack. This seems to be rare enough that is not worth implementing for now.
+        if self.impersonate and len(attachments) > 0 and is_user_new:
+            log.warning(f'Creating users on the fly is currently not implemented falling back to the default user')
+            sender = self._fallback_user
+
         try:
             date = datetime.datetime.strptime(attributes['Date'], '%a, %d %b %Y %H:%M:%S %z') if self.rewrite_datetime else None
         except ValueError as e:
@@ -350,7 +357,14 @@ class Elog:
                 message += part + os.linesep
         if message:
             _send_message(message)
+        if self.impersonate and is_user_new and self.can_create_users:
+            user_info = self._get_user_by_email(sender['email'])
 
+            if not user_info:
+                log.warning(f'User "{sender["email"]}" was not created for unknown reasons.')
+            else:
+                log.info(f'User "{sender["email"]}" was created and added to the user_map.')
+                self._users_map[sender['email']] = user_info
         # add entry to db
         data = {'entry_id': int(attributes["$@MID@$"]),
                 'entry_date': str(attributes['Date']),
