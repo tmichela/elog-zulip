@@ -75,7 +75,9 @@ class Elog:
         self.dry_run = dry_run
         if dry_run:
             self.entry = FakeDB()
+            self.elog_zulip_map = FakeDB()
             self.zulip = FakeZulip()
+            self._zulip_url = 'https://example.com/'
         else:
             # zulip client
             self.zulip = zulip.Client(
@@ -88,7 +90,9 @@ class Elog:
             # database connection
             self._db = dataset.connect(config['database'])
             self.entry = self._db[self.table]
+            self.elog_zulip_map = self._db['elog_zulip_map']
 
+            self._zulip_url = _handle_z_error(self.zulip.get_server_settings)['realm_url']
             fallback_user_email = config.get('impersonator-email', None)
 
             if fallback_user_email is not None:
@@ -326,6 +330,7 @@ class Elog:
         attachments_text = ''
         attachments_by_filename = {}
         zulip_attachments = []
+
         for idx, attachment in enumerate(attachments, start=1):
             log.info(f'New attachment: {attachment}')
             # replace special characters in url string
@@ -439,6 +444,22 @@ class Elog:
                 flags=re.M|re.I
             )
 
+            def get_zulip_entry_or_identity(match):
+                url = match[2]
+                if match[3] != attributes["$@MID@$"]:
+                    if elog_zulip := self.elog_zulip_map.find_one(entry_url=re.sub(r'(?<!:)//', '/', url.lower())):
+                        url = elog_zulip['zulip_url']
+                    else:
+                        log.info(f'No matching zulip url was found for entry {match[2]}')
+                return f'[{match[1]}]({url})'
+
+            msg = re.sub(
+                fr'\[([^\]]*)\]\(({re.escape(current_elog_url)}/(\d+))\)',
+                get_zulip_entry_or_identity,
+                msg,
+                flags=re.I
+            )
+
             return msg
 
         def _fix_elog_links(msg):
@@ -452,6 +473,7 @@ class Elog:
 
         # combine parts and send to zulip
         message = ''
+        first_zulip_message = None
         for part, part_images in parts:
             # TODO handle len(part) > maxchar
             if part_images:
@@ -459,11 +481,16 @@ class Elog:
             if (len(message) + len(part)) > maxchar:
                 if message:
                     r = _send_message(_fix_elog_links(message))
+                    if first_zulip_message is None:
+                        first_zulip_message = r
                 message = part
             else:
                 message += part + os.linesep
         if message:
             r = _send_message(_fix_elog_links(message))
+            if first_zulip_message is None:
+                first_zulip_message = r
+
         if self.impersonate and is_user_new and self.can_create_users:
             user_info = self._get_user_by_email(sender['email'])
 
@@ -472,11 +499,18 @@ class Elog:
             else:
                 log.info(f'User "{sender["email"]}" was created and added to the user_map.')
                 self._users_map[sender['email']] = user_info
+
         # add entry to db
         data = {'entry_id': int(attributes["$@MID@$"]),
                 'entry_date': str(attributes['Date']),
                 'entry_author': str(attributes['Author'])}
         self.entry.insert(data, ['entry_id'])
+
+        self.elog_zulip_map.insert({
+            'entry_id': int(attributes["$@MID@$"]),
+            'entry_url': re.sub(r'(?<!:)//', '/', self.entry_url(attributes)).lower(),
+            'zulip_url': f'{self._zulip_url}/#narrow/channel/{self.stream}/topic/{topic}/near/{first_zulip_message["id"]}'
+        })
 
     def publish(self, ids: list[int] = []):
 

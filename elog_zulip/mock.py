@@ -16,9 +16,11 @@ class FakeDB:
 
 
 class FakeZulip:
+
     def send_message(self, message):
         log.info(f'Sending {message}')
         return {'result': 'success', 'id': -1}
+
     def call_endpoint(self, url, method = "POST", *args, **kwargs):
         if url.startswith('user_uploads') and method == "POST":
             return {'result': 'success', 'uri': 'https://example.com'}
