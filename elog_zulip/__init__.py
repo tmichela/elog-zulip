@@ -336,13 +336,18 @@ class Elog:
                 'entry_author': str(attributes['Author'])}
         self.entry.insert(data, ['entry_id'])
 
-    def publish(self, id: int = None):
-        if id is not None:
-            self._publish(*self._read_entry(id))
-            return
+    def publish(self, ids: list[int] = []):
 
-        for content, attributes, attachments in self.new_entries():
-            self._publish(content, attributes, attachments)
+        if ids:
+            saved_entries = self._saved_entries()
+            for id in ids:
+                if id not in saved_entries:
+                    self._publish(*self._read_entry(id))
+                else:
+                    log.warning(f'Message {id} is already present in the db. Skipping.')
+        else:
+            for content, attributes, attachments in self.new_entries():
+                self._publish(content, attributes, attachments)
 
 
 def main(argv=None):
@@ -351,8 +356,17 @@ def main(argv=None):
     ap.add_argument('config', help='toml configuration file')
     ap.add_argument("--dry-run", action="store_true",
                     help="Connect to elog, but mock the database and Zulip.")
+    ap.add_argument("--elog-ids", default='',
+                    help="The ids of the messages to import from the elog.")
     args = ap.parse_args()
     config = toml.load(args.config)
+
+    try:
+        ids = list({int(e) for e in args.elog_ids.split(',') if e.strip()})
+    except ValueError:
+        log.error(f'The list of ids is not valid: "{args.elog_ids}". The list must be a comma separated list of integers')
+        sys.exit(1)
+
 
     # set logger
     if 'log-file' in config['META']:
@@ -365,9 +379,16 @@ def main(argv=None):
 
     meta = config.pop("META")
 
+    if len(config) > 1 and args.elog_ids:
+        log.error('The --elog-ids option only works if a single import configuration is present in the configuration file.')
+        sys.exit(1)
+
+
+
+
     for elog, conf in config.items():
         conf.update(meta)
-        Elog(conf, args.dry_run).publish()
+        Elog(conf, args.dry_run).publish(ids)
 
 
 if __name__ == '__main__':
