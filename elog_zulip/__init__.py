@@ -77,7 +77,7 @@ class Elog:
                     config_file=config['zulip-rc'],
                     # Option to make the software work even if the HTTPS certificate is not valid
                     insecure=config.get('allow-insecure-zulip', False),
-                    # Only when passing certain client name the API allows the client to impersonate people
+                    # Only when passing specific client names the server allows the client to impersonate users
                     client='jabber_mirror' if self.impersonate else None
                     )
             # database connection
