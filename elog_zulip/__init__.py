@@ -64,7 +64,11 @@ class Elog:
         self.impersonate = config.get('use-elog-user', False)
         users_map_path = config.get('users-map')
         self.rewrite_datetime = config.get('use-elog-datetime', False)
-        self._fallback_user = 'me@example.com'
+        self.can_create_users = config.get('can-create-users', dry_run)
+        self._fallback_user = {
+            'email': 'me@example.com',
+            'user_id': None
+        }
         self.config = config
 
         self.dry_run = dry_run
@@ -84,11 +88,19 @@ class Elog:
             self._db = dataset.connect(config['database'])
             self.entry = self._db[self.table]
 
-        self._fallback_user = config.get('default-impersonator', self.zulip.get_profile()['email'])
+            fallback_user_email = config.get('impersonator-email', None)
 
-        if not self._get_user_by_email(self._fallback_user):
-            log.error(f'The impersonation default user {self._fallback_user} does not exist on the server.')
-            sys.exit(1)
+            if fallback_user_email is not None:
+                user_info = self._get_user_by_email(fallback_user_email)
+
+                if not user_info:
+                    log.error(f'The impersonation default user "{fallback_user_email}" does not exist on the server.')
+                    sys.exit(1)
+
+                self._fallback_user = user_info
+            else:
+                self._fallback_user = _handle_z_error(self.zulip.get_profile)
+
 
         self._users_map = {}
         if self.impersonate:
@@ -139,12 +151,19 @@ class Elog:
 
         for d in data[1:]:
             user_dict = dict(zip(header, d))
+            server_user = existing_users.get(user_dict['email'], {
+                'email': user_dict['email'],
+                'user_id': None
+            })
 
-            if not can_create_users and user_dict['email'] not in existing_users:
+            if not (self.can_create_users or server_user):
                 log.info(f'User {user_dict["email"]} is not present in the server skipping.')
                 continue
 
-            self._users_map[user_dict['elog_user']] = user_dict
+            self._users_map[user_dict['elog_user']] = {
+                'map_info': user_dict,
+                'server_info': server_user
+            }
 
         if len(self._users_map) == 0:
             log.error(f'No user found in the user map. Please check that you are using the correct user map for this elog.')
@@ -230,12 +249,15 @@ class Elog:
     def _publish(self, text, attributes, attachments, maxchar=10_000):
         header = self._default_header(attributes)
 
-        sender = None
+        sender = {
+            'email': None,
+            'user_id': None
+        }
         if self.impersonate and self._users_map:
             a = attributes['Author']
             sender = self._fallback_user
             if a in self._users_map:
-                sender = self._users_map[a]['email']
+                sender = self._users_map[a]['server_info']
 
         try:
             date = datetime.datetime.strptime(attributes['Date'], '%a, %d %b %Y %H:%M:%S %z') if self.rewrite_datetime else None
@@ -312,7 +334,7 @@ class Elog:
 
         def _send_message(txt):
             txt = _replace_attachments_in_table(txt)
-            r = self._send_message(txt, topic, sender, date)
+            r = self._send_message(txt, topic, sender['email'], date)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
 
         # combine parts and send to zulip
