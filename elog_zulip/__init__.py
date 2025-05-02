@@ -241,6 +241,8 @@ class Elog:
             request['forged'] = True
             request['time'] = date.timestamp()
 
+        log.debug(request)
+
         res = _handle_z_error(self.zulip.send_message, request)
         return res
 
