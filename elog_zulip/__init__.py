@@ -57,6 +57,7 @@ class Elog:
         user, pswd = config.get('elog-credentials', (None, ''))
         url = config['elog-url']
 
+        self.__supports_impersonation = False
         self.logbook = Logbook(url, user=user, password=pswd)
 
         self.table = config['db-table']
@@ -186,7 +187,38 @@ class Elog:
             for entry in new_entries:
                 yield self._read_entry(entry)
 
-    def upload(self, attachment):
+    # Attachments that are not included in messages are automatically deleted after some time.
+    # For this reason there is no attachment removal if the test in the method fails and terminates
+    # the program.
+    def __check_if_server_supports_impersonation(self, result):
+
+        if self.__supports_impersonation:
+            return
+
+        ignored_parameters = result.get('ignored_parameters_unsupported', {})
+        if 'sender_id' in ignored_parameters:
+            raise Exception(f'The server {self._zulip_url} doesn\'t support attachment impersonation')
+        self.__supports_impersonation = True
+
+    def _upload_with_sender(self, file, sender_id=None):
+        request = None
+        is_impersonating = sender_id is not None
+        if is_impersonating:
+            request = {
+                'sender_id': sender_id
+            }
+        result = _handle_z_error(
+            self.zulip.call_endpoint,
+            url="user_uploads",
+            files=[file],
+            request=request
+        )
+        if is_impersonating:
+            self.__check_if_server_supports_impersonation(result)
+
+        return result
+
+    def upload(self, attachment, sender_id=None):
         # download attachment from logbook
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -197,7 +229,7 @@ class Elog:
         file_.seek(0)
 
         # upload document to zulip
-        res = _handle_z_error(self.zulip.upload_file, file_)
+        res = self._upload_with_sender(file_, sender_id)
         return file_.name, res["uri"]
 
     def entry_url(self, attributes):
@@ -298,7 +330,7 @@ class Elog:
             # replace special characters in url string
             attachment = quote(attachment, safe='/:')
             log.debug(f'Attachment url parsed: {attachment}')
-            fname, uri = self.upload(attachment)
+            fname, uri = self.upload(attachment, sender['user_id'])
             zulip_attachments.append((fname, uri))
             attachments_text += f'\n[{idx}] [{fname}]({uri})'
         if attachments_text:
@@ -316,13 +348,13 @@ class Elog:
                     while len(url.suffixes) > 1:
                         url = url.with_suffix('')
                     try:
-                        _, uri = self.upload(self.logbook._url + str(url))
+                        fname, uri = self.upload(self.logbook._url + str(url), sender['user_id'])
                     except LogbookMessageRejected:
                         # image url is not something saved in the elog
                         _log_error(f'Could not download attachment: {img}')
                         uri = None
                 else:
-                    uri = _handle_z_error(self.zulip.upload_file, img)['uri']
+                    uri = self._upload_with_sender(img, sender['user_id'])['uri']
                 placeholders[placeholder] = f'[]({uri})' if uri is not None else ''
             return txt.format(**placeholders)
 
