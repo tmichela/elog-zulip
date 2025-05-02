@@ -324,6 +324,7 @@ class Elog:
 
         # upload attachments
         attachments_text = ''
+        attachments_by_filename = {}
         zulip_attachments = []
         for idx, attachment in enumerate(attachments, start=1):
             log.info(f'New attachment: {attachment}')
@@ -331,6 +332,7 @@ class Elog:
             attachment = quote(attachment, safe='/:')
             log.debug(f'Attachment url parsed: {attachment}')
             fname, uri = self.upload(attachment, sender['user_id'])
+            attachments_by_filename[fname] = uri
             zulip_attachments.append((fname, uri))
             attachments_text += f'\n[{idx}] [{fname}]({uri})'
         if attachments_text:
@@ -349,12 +351,15 @@ class Elog:
                         url = url.with_suffix('')
                     try:
                         fname, uri = self.upload(self.logbook._url + str(url), sender['user_id'])
+                        attachments_by_filename[fname] = uri
                     except LogbookMessageRejected:
                         # image url is not something saved in the elog
                         _log_error(f'Could not download attachment: {img}')
                         uri = None
                 else:
+                    fname = img.name
                     uri = self._upload_with_sender(img, sender['user_id'])['uri']
+                    attachments_by_filename[fname] = uri
                 placeholders[placeholder] = f'[]({uri})' if uri is not None else ''
             return txt.format(**placeholders)
 
@@ -372,10 +377,78 @@ class Elog:
                 output.append(line)
             return '\n'.join(output)
 
+
+        def _fix_relative_elog_links(msg):
+            current_elog_url = self.logbook._url.rstrip("/")
+
+            # It seems that a "timestamp" is added as a prefix to the files that were
+            # uploaded in the elog. This function matches the filename if it has an exact
+            # match and even when the filename has or has not the timestamp prefix.
+            def get_matching_filename(string):
+                date_time_re = re.compile(r'^\d{6}_\d{6}_')
+                if string in attachments_by_filename:
+                    return string
+                else:
+                    for k in attachments_by_filename.keys():
+                        # 14 is the length of the "timestamp" prefix that has the form
+                        # "NNNNNN_NNNNNN_". By checking the string with startswith we
+                        # can handle some of the cases where a thumbnail is shown instead
+                        # of the actual content. Compared to the actual image the thumbnail
+                        # has a second extension.
+                        if (k[14:].startswith(string) and date_time_re.match(k)) or \
+                            (string[14:].startswith(k) and date_time_re.match(string)):
+                            return k
+                return None
+
+            def fix_url(match):
+                url = match[2]
+
+                # checks if one of the file matches the label of the url
+                if key := get_matching_filename(match[1]):
+                    url = attachments_by_filename[key]
+                # checks if the filename is in the link portion of the url
+                elif key := get_matching_filename(url):
+                    url = attachments_by_filename[key]
+                elif not url.startswith('http') and not url.startswith('/user_uploads'):
+                    url = re.sub(r'(?<!:)//', '/', f'{current_elog_url}/{url}')
+
+                return f'[{match[1]}]({url})'
+
+            msg = re.sub(
+                r'\[([^\]]+)\]\(([^)]+)\)',
+                fix_url,
+                msg
+            )
+
+            return msg
+
+        # Also fix inner full urls to the same elog
+        # URLs to external elogs could be fixed but only with a second editing pass
+        def _fix_full_elog_links(msg):
+            new_msg = msg
+            current_elog_url = self.logbook._url.rstrip("/")
+            url_with_label_re = re.compile(r'(?<=\[)([^\]]+)(?=\])')
+
+            def build_single_url(match):
+                name_re = url_with_label_re.search(match[0]) or ['']
+                return f'[{name_re[0]}]({match[1]})'
+            msg = re.sub(
+                fr'\[[^\]]*\]\(({re.escape(current_elog_url)}[^\)]+)\)(?:\s*\[[^\]]*\]\(\1\))+',
+                build_single_url,
+                msg,
+                flags=re.M|re.I
+            )
+
+            return msg
+
+        def _fix_elog_links(msg):
+            return _fix_full_elog_links(_fix_relative_elog_links(msg))
+
         def _send_message(txt):
             txt = _replace_attachments_in_table(txt)
             r = self._send_message(txt, topic, sender['email'], date)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
+            return r
 
         # combine parts and send to zulip
         message = ''
@@ -385,12 +458,12 @@ class Elog:
                 part = _upload_embedded_images(part, part_images)
             if (len(message) + len(part)) > maxchar:
                 if message:
-                    _send_message(message)
+                    r = _send_message(_fix_elog_links(message))
                 message = part
             else:
                 message += part + os.linesep
         if message:
-            _send_message(message)
+            r = _send_message(_fix_elog_links(message))
         if self.impersonate and is_user_new and self.can_create_users:
             user_info = self._get_user_by_email(sender['email'])
 
