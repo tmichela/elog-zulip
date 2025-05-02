@@ -19,7 +19,11 @@ class FakeZulip:
     def send_message(self, message):
         log.info(f'Sending {message}')
         return {'result': 'success'}
+    def call_endpoint(self, url, method = "POST", *args, **kwargs):
+        if url.startswith('user_uploads') and method == "POST":
+            return {'result': 'success', 'uri': 'https://example.com'}
+        if url.startswith('users/') and method == "GET":
+            return {'result': 'success', 'user': {'email': 'me@example.com', 'user_id': -1}}
 
-    def upload_file(self, file):
-        return {'result': 'success', 'uri': 'https://example.com'}
+        raise Exception(f'Call to url: {url} with method {method} is not implemented')
 
