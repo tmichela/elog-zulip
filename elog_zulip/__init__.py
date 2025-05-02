@@ -109,16 +109,15 @@ class Elog:
                 sys.exit(1)
             self._load_elog_user_map()
 
+
     def _get_user_by_email(self, user):
-        response = self.zulip.call_endpoint(
-            url=f"/users/{user}",
-            method="GET",
+        response = _handle_z_error(self.zulip.call_endpoint,
+            url=f"users/{user}",
+            method="GET"
         )
 
-        if response['result'] == 'success':
-            return response['user']
+        return (response['user'] if response['result'] == 'success' else {})
 
-        return {}
 
 
     def _load_elog_user_map(self):
