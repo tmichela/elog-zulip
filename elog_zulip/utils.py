@@ -272,7 +272,7 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
                 res = requests.get(src)
             except requests.exceptions.TooManyRedirects as e:
                 _log_error(f'Too many redirects while downloading img: {img}')
-           except requests.exceptions.SSLError as e:
+            except requests.exceptions.SSLError as e:
                 _log_error(f'Invalid SSL certificate while downloading img: {img}')
 
             if res is not None and res.status_code == 200:
