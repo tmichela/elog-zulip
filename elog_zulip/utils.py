@@ -34,7 +34,7 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
         tag.unwrap()
 
     for tag in soup.find_all(["a"]):
-        href = tag['href']
+        href = tag.get('href', '')
 
         if href == '':
             # removes links with empty href
