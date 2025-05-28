@@ -73,7 +73,11 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     # only one doesn't seem to do anything. The &NewLine; entity is better compared to &nbsp; because
     # it doesn't produce any character when copied
     # TODO: check whether this needs to be extended to empty lines
-    md = re.sub(r"^\s$", "&NewLine;\n&NewLine;", md, flags=re.MULTILINE)
+    md = re.sub(r"^\s$", "&NewLine;", md, flags=re.MULTILINE)
+    # Removes empty lines between lines containing &NewLines; entities
+    md = re.sub(r"(^&NewLine;$\n)(?:^$\n)+(?=\1)", r"\g<1>", md, flags=re.MULTILINE)
+    # Adds one &NewLine; entity more at the end because one single entity has no effect in zulip
+    md = re.sub(r"(?:^&NewLine;$\n)+", r"\g<0>&NewLine;\n", md, flags=re.MULTILINE)
 
     return md
 
