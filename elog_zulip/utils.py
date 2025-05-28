@@ -69,6 +69,12 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     # remove empty HTML <!-- --> comments that are added from the conversion to github markdown
     md = re.sub(r"^\s*\<\!--\s*--\>\s*$", "", md, flags=re.MULTILINE)
 
+    # Adds new line entities where there are lines with single spaces. Two entities are added because
+    # only one doesn't seem to do anything. The &NewLine; entity is better compared to &nbsp; because
+    # it doesn't produce any character when copied
+    # TODO: check whether this needs to be extended to empty lines
+    md = re.sub(r"^\s$", "&NewLine;\n&NewLine;", md, flags=re.MULTILINE)
+
     return md
 
 
