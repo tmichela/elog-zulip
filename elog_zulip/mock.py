@@ -22,3 +22,4 @@ class FakeZulip:
 
     def upload_file(self, file):
         return {'result': 'success', 'uri': 'https://example.com'}
+

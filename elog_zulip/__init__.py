@@ -2,8 +2,11 @@
 """
 __version__ = "0.2.0"
 
+import csv
+import datetime
 import os
 import re
+import sys
 import warnings
 from argparse import ArgumentParser
 from io import BytesIO
@@ -53,22 +56,101 @@ class Elog:
     def __init__(self, config, dry_run=False):
         user, pswd = config.get('elog-credentials', (None, ''))
         url = config['elog-url']
+
         self.logbook = Logbook(url, user=user, password=pswd)
 
         self.table = config['db-table']
         self.stream = config['zulip-stream']
+        self.impersonate = config.get('use-elog-user', False)
+        users_map_path = config.get('users-map')
+        can_create_users = config.get('can-create-users', False)
+        self.rewrite_datetime = config.get('use-elog-datetime', False)
+        self._fallback_user = 'me@example.com'
         self.config = config
 
         self.dry_run = dry_run
         if dry_run:
             self.entry = FakeDB()
             self.zulip = FakeZulip()
+            can_create_users = True
         else:
             # zulip client
-            self.zulip = zulip.Client(config_file=config['zulip-rc'])
+            self.zulip = zulip.Client(
+                    config_file=config['zulip-rc'],
+                    # Option to make the software work even if the HTTPS certificate is not valid
+                    insecure=config.get('allow-insecure-zulip', False),
+                    # Only when passing certain client name the API allows the client to impersonate people
+                    client='jabber_mirror' if self.impersonate else None
+                    )
             # database connection
             self._db = dataset.connect(config['database'])
             self.entry = self._db[self.table]
+
+        self._fallback_user = config.get('default-impersonator', self.zulip.get_profile()['email'])
+
+        if not self._get_user_by_email(self._fallback_user):
+            log.error(f'The impersonation default user {self._fallback_user} does not exist on the server.')
+            sys.exit(1)
+
+        self._users_map = {}
+        if self.impersonate:
+            if not users_map_path:
+                log.error('Cannot proceed without a users map')
+                sys.exit(1)
+            self._load_elog_user_map()
+
+    def _get_user_by_email(self, user):
+        response = self.zulip.call_endpoint(
+            url=f"/users/{user}",
+            method="GET",
+        )
+
+        if response['result'] == 'success':
+            return response['user']
+
+        return {}
+
+
+    def _load_elog_user_map(self):
+        can_create_users = self.config.get('can-create-users', False)
+        existing_users = {}
+
+        if not can_create_users:
+            response = self.zulip.get_members()
+            if response['result'] == 'success':
+                existing_users = { m['email'] : m for m in response['members'] }
+            else:
+                log.error(f'Error while querying the users: {response["msg"]}')
+                sys.exit(1)
+
+        with open(self.config.get('users-map'), newline='') as f:
+            data = list(csv.reader(f))
+
+        if len(data) < 2:
+            log.error(f'The provided user map is empty. Please provide a valid one.')
+            sys.exit(1)
+
+        header = data[0]
+
+        if not ('elog_user' in header and 'email' in header):
+            log.error(
+                f'The users map needs to have an header with two fields:'
+                '"elog_user" (name of the user in the elog) and "email" (email of '
+                 'the user in the destination zulip system)')
+            sys.exit(1)
+
+        for d in data[1:]:
+            user_dict = dict(zip(header, d))
+
+            if not can_create_users and user_dict['email'] not in existing_users:
+                log.info(f'User {user_dict["email"]} is not present in the server skipping.')
+                continue
+
+            self._users_map[user_dict['elog_user']] = user_dict
+
+        if len(self._users_map) == 0:
+            log.error(f'No user found in the user map. Please check that you are using the correct user map for this elog.')
+            sys.exit(1)
 
     def _saved_entries(self):
         return {int(e['entry_id']) for e in self.entry.find(order_by=['entry_id']) or ()}
@@ -126,7 +208,7 @@ class Elog:
         ret += '```\n'
         return ret
 
-    def _send_message(self, message, topic):
+    def _send_message(self, message, topic, sender = None, date = None):
         log.info(message)
         log.info(f'sending to #{self.stream}>>{topic}')
         request = {
@@ -137,11 +219,31 @@ class Elog:
             "topic": topic,
             "content": message,
         }
+        if sender is not None:
+            request['sender'] = sender
+
+        if date is not None:
+            request['forged'] = True
+            request['time'] = date.timestamp()
+
         res = _handle_z_error(self.zulip.send_message, request)
         return res
 
     def _publish(self, text, attributes, attachments, maxchar=10_000):
         header = self._default_header(attributes)
+
+        sender = None
+        if self.impersonate and self._users_map:
+            a = attributes['Author']
+            sender = self._fallback_user
+            if a in self._users_map:
+                sender = self._users_map[a]['email']
+
+        try:
+            date = datetime.datetime.strptime(attributes['Date'], '%a, %d %b %Y %H:%M:%S %z') if self.rewrite_datetime else None
+        except ValueError as e:
+            log.warning(f'Ignoring invalid date {attributes["Date"]}')
+            date = None
 
         attributes['EntryUrl'] = self.entry_url(attributes)
         attributes['EntryID'] = attributes['$@MID@$']
@@ -212,7 +314,7 @@ class Elog:
 
         def _send_message(txt):
             txt = _replace_attachments_in_table(txt)
-            r = self._send_message(txt, topic)
+            r = self._send_message(txt, topic, sender, date)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
 
         # combine parts and send to zulip
@@ -271,5 +373,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    import sys
     main(sys.argv[1:])
