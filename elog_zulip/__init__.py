@@ -533,17 +533,10 @@ def main(argv=None):
     ap.add_argument('config', help='toml configuration file')
     ap.add_argument("--dry-run", action="store_true",
                     help="Connect to elog, but mock the database and Zulip.")
-    ap.add_argument("--elog-ids", default='',
-                    help="The ids of the messages to import from the elog.")
+    ap.add_argument('-i', '--id', default=None, type=int, action='append', dest='elog_ids',
+                    help="The id of a message to be imported from the elog (can be specified multiple times).")
     args = ap.parse_args()
     config = toml.load(args.config)
-
-    try:
-        ids = list({int(e) for e in args.elog_ids.split(',') if e.strip()})
-    except ValueError:
-        log.error(f'The list of ids is not valid: "{args.elog_ids}". The list must be a comma separated list of integers')
-        sys.exit(1)
-
 
     # set logger
     if 'log-file' in config['META']:
@@ -559,9 +552,6 @@ def main(argv=None):
     if len(config) > 1 and args.elog_ids:
         log.error('The --elog-ids option only works if a single import configuration is present in the configuration file.')
         sys.exit(1)
-
-
-
 
     for elog, conf in config.items():
         conf.update(meta)
