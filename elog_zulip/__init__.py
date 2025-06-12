@@ -66,6 +66,7 @@ class Elog:
         users_map_path = config.get('users-map')
         self.rewrite_datetime = config.get('use-elog-datetime', False)
         self.can_create_users = config.get('can-create-users', dry_run)
+        self.enable_rewrite_elog_links = config.get('rewrite-elog-links', False)
         self._fallback_user = {
             'email': 'me@example.com',
             'user_id': None
@@ -429,7 +430,7 @@ class Elog:
 
         # Also fix inner full urls to the same elog
         # URLs to external elogs could be fixed but only with a second editing pass
-        def _fix_full_elog_links(msg):
+        def _rewrite_elog_links_to_zulip(msg):
             new_msg = msg
             current_elog_url = self.logbook._url.rstrip("/")
             url_with_label_re = re.compile(r'(?<=\[)([^\]]+)(?=\])')
@@ -462,8 +463,13 @@ class Elog:
 
             return msg
 
-        def _fix_elog_links(msg):
-            return _fix_full_elog_links(_fix_relative_elog_links(msg))
+        def _fix_elog_links(msg, rewrite_elog_links=False):
+            msg = _fix_relative_elog_links(msg)
+
+            if rewrite_elog_links:
+                return _rewrite_elog_links_to_zulip(msg)
+
+            return msg
 
         def _send_message(txt):
             txt = _replace_attachments_in_table(txt)
@@ -480,7 +486,7 @@ class Elog:
                 part = _upload_embedded_images(part, part_images)
             if (len(message) + len(part)) > maxchar:
                 if message:
-                    r = _send_message(_fix_elog_links(message))
+                    r = _send_message(_fix_elog_links(message, self.enable_rewrite_elog_links))
                     if first_zulip_message is None:
                         first_zulip_message = r
                 message = part
