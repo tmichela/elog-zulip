@@ -512,9 +512,10 @@ class Elog:
             'zulip_url': f'{self._zulip_url}/#narrow/channel/{self.stream}/topic/{topic}/near/{first_zulip_message["id"]}'
         })
 
-    def publish(self, ids: list[int] = []):
+    def publish(self, ids: int | list[int] = None):
 
         if ids:
+            ids = [ids] if isinstance(ids, int) else ids
             saved_entries = self._saved_entries()
             for id in ids:
                 if id not in saved_entries:
