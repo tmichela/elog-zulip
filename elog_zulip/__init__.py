@@ -520,8 +520,9 @@ class Elog:
 
     def publish(self, ids: int | list[int] = None):
 
-        if ids:
+        if ids is not None:
             ids = [ids] if isinstance(ids, int) else ids
+            assert isinstance(ids, list)
             saved_entries = self._saved_entries()
             for id in ids:
                 if id not in saved_entries:
