@@ -555,7 +555,7 @@ def main(argv=None):
 
     for elog, conf in config.items():
         conf.update(meta)
-        Elog(conf, args.dry_run).publish(ids)
+        Elog(conf, args.dry_run).publish(args.elog_ids)
 
 
 if __name__ == '__main__':
