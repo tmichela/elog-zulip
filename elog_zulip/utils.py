@@ -28,11 +28,23 @@ def is_html(text: str) -> bool:
 
 
 def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
-    # remove [span, div] tags
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup.find_all(["span", "div"]):
+    # remove [span, div, u, sup, sub] tags
+    for tag in soup.find_all(["span", "div", "u", "sup", "sub"]):
         tag.unwrap()
+
+    for tag in soup.find_all(["a"]):
+        href = tag.get('href', '')
+
+        if href == '':
+            # removes links with empty href
+            tag.unwrap()
+        else:
+            # remove attributes from a tags as it prevents proper conversion to markdown links
+            tag.attrs = {'href': href}
+
     html = str(soup)
+
 
     # convert html to markdown
     md = convert_text(
@@ -47,6 +59,26 @@ def html_to_md(html: str, columns: int = MD_LINE_WIDTH) -> str:
     md = re.sub(r"(?<!^)\\([\>\#])", r"\g<1>", md, flags=re.MULTILINE)
     # -[]*>#().|
     # \`_{}+!
+
+    # remove < > from bare links that is part of github markdown but not of zulip markdown
+    md = re.sub(r"\<(https?\:\/\/[^\>]+)\>", r"\g<1>", md, flags=re.MULTILINE)
+
+    # remove multiple < > from emails
+    md = re.sub(r"\<+([^@\s]+\@[^\>\s]+)\>+", r"<\g<1>>", md, flags=re.MULTILINE)
+
+    # remove empty HTML <!-- --> comments that are added from the conversion to github markdown
+    md = re.sub(r"^\s*\<\!--\s*--\>\s*$", "", md, flags=re.MULTILINE)
+
+    # Adds new line entities where there are lines with single spaces. The number of entities added
+    # is equal to the matches plus one because the first that is added doesn't seem to do anything.
+    # The &NewLine; entity is better compared to &nbsp; because it doesn't produce any character when copied
+    # TODO: check whether this needs to be extended to empty lines
+    md = re.sub(r"^\s$", "&NewLine;", md, flags=re.MULTILINE)
+    # Removes empty lines between lines containing &NewLines; entities
+    md = re.sub(r"(^&NewLine;$\n)(?:^$\n)+(?=\1)", r"\g<1>", md, flags=re.MULTILINE)
+    # Adds one &NewLine; entity more at the end because one single entity has no effect in zulip
+    md = re.sub(r"(?:^&NewLine;$\n)+", r"\g<0>&NewLine;\n", md, flags=re.MULTILINE)
+
     return md
 
 
@@ -230,12 +262,12 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
                 else:
                     parent.replace_with(f'{{attachment_{index}}}')
                     images.append((f'attachment_{index}', index))
-        elif src.startswith("data:image/png;base64"):
-            metadata, _, data = src.partition(',')
+        elif m := re.match(r'data:image/(png|jpe?g);base64,', src):
+            data = src[m.span()[1]:]
             alt = img.attrs.get('alt', None)
             if alt == src:
                 alt = None
-            f = _buffer(b64decode(data), alt or f"image_{idx}.png")
+            f = _buffer(b64decode(data), alt or f"image_{idx}.{m.group(1)}")
             _add_image(img, img_id, f)
         elif not src.startswith('http'):
             # we assume this is an attachment url in the elog
@@ -243,10 +275,17 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
         else:
             with open('./elog-zulip-info.log', 'a') as f:
                 f.write(f'{datetime.now().isoformat(timespec="seconds")}: external image: {img}\n')
-            # try downloading
-            res = requests.get(src)
 
-            if res.status_code == 200:
+            res = None
+            try:
+                # try downloading
+                res = requests.get(src)
+            except requests.exceptions.TooManyRedirects as e:
+                _log_error(f'Too many redirects while downloading img: {img}')
+            except requests.exceptions.SSLError as e:
+                _log_error(f'Invalid SSL certificate while downloading img: {img}')
+
+            if res is not None and res.status_code == 200:
                 f = _buffer(res.content, src.rpartition('/')[-1])
                 _add_image(img, img_id, f)
             else:

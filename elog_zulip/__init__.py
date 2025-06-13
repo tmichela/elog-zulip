@@ -33,10 +33,10 @@ from .utils import format_text, retry, _log_error
 __all__ = ['Elog']
 
 
-def _handle_z_error(caller, *args):
+def _handle_z_error(caller, *args, **kwargs):
     """Handles Zulip errors.
     """
-    res = caller(*args)
+    res = caller(*args, **kwargs)
     if res['result'] == 'success':
         if param := res.get('ignored_parameters_unsupported'):
             log.warning(f'Ignored unsupported parameters: {param}')
@@ -48,7 +48,7 @@ def _handle_z_error(caller, *args):
         wait = 1 + res["retry-after"]
         log.info(f'Zulip: {res["msg"]}, waiting {wait}')
         sleep(wait)
-        return _handle_z_error(caller, *args)
+        return _handle_z_error(caller, *args, **kwargs)
     raise Exception(res.get('msg', res))
 
 
@@ -57,40 +57,56 @@ class Elog:
         user, pswd = config.get('elog-credentials', (None, ''))
         url = config['elog-url']
 
+        self.__supports_impersonation = False
         self.logbook = Logbook(url, user=user, password=pswd)
 
         self.table = config['db-table']
         self.stream = config['zulip-stream']
         self.impersonate = config.get('use-elog-user', False)
         users_map_path = config.get('users-map')
-        can_create_users = config.get('can-create-users', False)
         self.rewrite_datetime = config.get('use-elog-datetime', False)
-        self._fallback_user = 'me@example.com'
+        self.can_create_users = config.get('can-create-users', dry_run)
+        self.enable_rewrite_elog_links = config.get('rewrite-elog-links', False)
+        self._fallback_user = {
+            'email': 'me@example.com',
+            'user_id': None
+        }
         self.config = config
 
         self.dry_run = dry_run
         if dry_run:
             self.entry = FakeDB()
+            self.elog_zulip_map = FakeDB()
             self.zulip = FakeZulip()
-            can_create_users = True
+            self._zulip_url = 'https://example.com/'
         else:
             # zulip client
             self.zulip = zulip.Client(
                     config_file=config['zulip-rc'],
                     # Option to make the software work even if the HTTPS certificate is not valid
                     insecure=config.get('allow-insecure-zulip', False),
-                    # Only when passing certain client name the API allows the client to impersonate people
+                    # Only when passing specific client names the server allows the client to impersonate users
                     client='jabber_mirror' if self.impersonate else None
                     )
             # database connection
             self._db = dataset.connect(config['database'])
             self.entry = self._db[self.table]
+            self.elog_zulip_map = self._db['elog_zulip_map']
 
-        self._fallback_user = config.get('default-impersonator', self.zulip.get_profile()['email'])
+            self._zulip_url = _handle_z_error(self.zulip.get_server_settings)['realm_url']
+            fallback_user_email = config.get('impersonator-email', None)
 
-        if not self._get_user_by_email(self._fallback_user):
-            log.error(f'The impersonation default user {self._fallback_user} does not exist on the server.')
-            sys.exit(1)
+            if fallback_user_email is not None:
+                user_info = self._get_user_by_email(fallback_user_email)
+
+                if not user_info:
+                    log.error(f'The impersonation default user "{fallback_user_email}" does not exist on the server.')
+                    sys.exit(1)
+
+                self._fallback_user = user_info
+            else:
+                self._fallback_user = _handle_z_error(self.zulip.get_profile)
+
 
         self._users_map = {}
         if self.impersonate:
@@ -99,24 +115,22 @@ class Elog:
                 sys.exit(1)
             self._load_elog_user_map()
 
+
     def _get_user_by_email(self, user):
-        response = self.zulip.call_endpoint(
-            url=f"/users/{user}",
-            method="GET",
+        response = _handle_z_error(self.zulip.call_endpoint,
+            url=f"users/{user}",
+            method="GET"
         )
 
-        if response['result'] == 'success':
-            return response['user']
+        return (response['user'] if response['result'] == 'success' else {})
 
-        return {}
 
 
     def _load_elog_user_map(self):
-        can_create_users = self.config.get('can-create-users', False)
         existing_users = {}
 
-        if not can_create_users:
-            response = self.zulip.get_members()
+        if not self.can_create_users:
+            response = _handle_z_error(self.zulip.get_members)
             if response['result'] == 'success':
                 existing_users = { m['email'] : m for m in response['members'] }
             else:
@@ -141,12 +155,19 @@ class Elog:
 
         for d in data[1:]:
             user_dict = dict(zip(header, d))
+            server_user = existing_users.get(user_dict['email'], {
+                'email': user_dict['email'],
+                'user_id': None
+            })
 
-            if not can_create_users and user_dict['email'] not in existing_users:
+            if not (self.can_create_users or server_user):
                 log.info(f'User {user_dict["email"]} is not present in the server skipping.')
                 continue
 
-            self._users_map[user_dict['elog_user']] = user_dict
+            self._users_map[user_dict['elog_user']] = {
+                'map_info': user_dict,
+                'server_info': server_user
+            }
 
         if len(self._users_map) == 0:
             log.error(f'No user found in the user map. Please check that you are using the correct user map for this elog.')
@@ -171,7 +192,38 @@ class Elog:
             for entry in new_entries:
                 yield self._read_entry(entry)
 
-    def upload(self, attachment):
+    # Attachments that are not included in messages are automatically deleted after some time.
+    # For this reason there is no attachment removal if the test in the method fails and terminates
+    # the program.
+    def __check_if_server_supports_impersonation(self, result):
+
+        if self.__supports_impersonation:
+            return
+
+        ignored_parameters = result.get('ignored_parameters_unsupported', {})
+        if 'sender_id' in ignored_parameters:
+            raise Exception(f'The server {self._zulip_url} doesn\'t support attachment impersonation')
+        self.__supports_impersonation = True
+
+    def _upload_with_sender(self, file, sender_id=None):
+        request = None
+        is_impersonating = sender_id is not None
+        if is_impersonating:
+            request = {
+                'sender_id': sender_id
+            }
+        result = _handle_z_error(
+            self.zulip.call_endpoint,
+            url="user_uploads",
+            files=[file],
+            request=request
+        )
+        if is_impersonating:
+            self.__check_if_server_supports_impersonation(result)
+
+        return result
+
+    def upload(self, attachment, sender_id=None):
         # download attachment from logbook
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -182,7 +234,7 @@ class Elog:
         file_.seek(0)
 
         # upload document to zulip
-        res = _handle_z_error(self.zulip.upload_file, file_)
+        res = self._upload_with_sender(file_, sender_id)
         return file_.name, res["uri"]
 
     def entry_url(self, attributes):
@@ -226,18 +278,31 @@ class Elog:
             request['forged'] = True
             request['time'] = date.timestamp()
 
+        log.debug(request)
+
         res = _handle_z_error(self.zulip.send_message, request)
         return res
 
     def _publish(self, text, attributes, attachments, maxchar=10_000):
         header = self._default_header(attributes)
 
-        sender = None
+        sender = {
+            'email': None,
+            'user_id': None
+        }
         if self.impersonate and self._users_map:
             a = attributes['Author']
             sender = self._fallback_user
             if a in self._users_map:
-                sender = self._users_map[a]['email']
+                sender = self._users_map[a]['server_info']
+
+        is_user_new = sender['user_id'] is None
+
+        # TODO the way to fix this would be to create a dummy message and then delete it. There is no proper way to fix this,
+        #      so this would be a hack. This seems to be rare enough that is not worth implementing for now.
+        if self.impersonate and len(attachments) > 0 and is_user_new:
+            log.warning(f'Creating users on the fly is currently not implemented falling back to the default user')
+            sender = self._fallback_user
 
         try:
             date = datetime.datetime.strptime(attributes['Date'], '%a, %d %b %Y %H:%M:%S %z') if self.rewrite_datetime else None
@@ -264,13 +329,16 @@ class Elog:
 
         # upload attachments
         attachments_text = ''
+        attachments_by_filename = {}
         zulip_attachments = []
+
         for idx, attachment in enumerate(attachments, start=1):
             log.info(f'New attachment: {attachment}')
             # replace special characters in url string
             attachment = quote(attachment, safe='/:')
             log.debug(f'Attachment url parsed: {attachment}')
-            fname, uri = self.upload(attachment)
+            fname, uri = self.upload(attachment, sender['user_id'])
+            attachments_by_filename[fname] = uri
             zulip_attachments.append((fname, uri))
             attachments_text += f'\n[{idx}] [{fname}]({uri})'
         if attachments_text:
@@ -288,13 +356,16 @@ class Elog:
                     while len(url.suffixes) > 1:
                         url = url.with_suffix('')
                     try:
-                        _, uri = self.upload(self.logbook._url + str(url))
+                        fname, uri = self.upload(self.logbook._url + str(url), sender['user_id'])
+                        attachments_by_filename[fname] = uri
                     except LogbookMessageRejected:
                         # image url is not something saved in the elog
                         _log_error(f'Could not download attachment: {img}')
                         uri = None
                 else:
-                    uri = _handle_z_error(self.zulip.upload_file, img)['uri']
+                    fname = img.name
+                    uri = self._upload_with_sender(img, sender['user_id'])['uri']
+                    attachments_by_filename[fname] = uri
                 placeholders[placeholder] = f'[]({uri})' if uri is not None else ''
             return txt.format(**placeholders)
 
@@ -312,25 +383,128 @@ class Elog:
                 output.append(line)
             return '\n'.join(output)
 
+
+        def _fix_relative_elog_links(msg):
+            current_elog_url = self.logbook._url.rstrip("/")
+
+            # It seems that a "timestamp" is added as a prefix to the files that were
+            # uploaded in the elog. This function matches the filename if it has an exact
+            # match and even when the filename has or has not the timestamp prefix.
+            def get_matching_filename(string):
+                date_time_re = re.compile(r'^\d{6}_\d{6}_')
+                if string in attachments_by_filename:
+                    return string
+                else:
+                    for k in attachments_by_filename.keys():
+                        # 14 is the length of the "timestamp" prefix that has the form
+                        # "NNNNNN_NNNNNN_". By checking the string with startswith we
+                        # can handle some of the cases where a thumbnail is shown instead
+                        # of the actual content. Compared to the actual image the thumbnail
+                        # has a second extension.
+                        if (k[14:].startswith(string) and date_time_re.match(k)) or \
+                            (string[14:].startswith(k) and date_time_re.match(string)):
+                            return k
+                return None
+
+            def fix_url(match):
+                url = match[2]
+
+                # checks if one of the file matches the label of the url
+                if key := get_matching_filename(match[1]):
+                    url = attachments_by_filename[key]
+                # checks if the filename is in the link portion of the url
+                elif key := get_matching_filename(url):
+                    url = attachments_by_filename[key]
+                elif not url.startswith('http') and not url.startswith('/user_uploads'):
+                    url = re.sub(r'(?<!:)//', '/', f'{current_elog_url}/{url}')
+
+                return f'[{match[1]}]({url})'
+
+            msg = re.sub(
+                r'\[([^\]]+)\]\(([^)]+)\)',
+                fix_url,
+                msg
+            )
+
+            return msg
+
+        # Also fix inner full urls to the same elog
+        # URLs to external elogs could be fixed but only with a second editing pass
+        def _rewrite_elog_links_to_zulip(msg):
+            new_msg = msg
+            current_elog_url = self.logbook._url.rstrip("/")
+            url_with_label_re = re.compile(r'(?<=\[)([^\]]+)(?=\])')
+
+            def build_single_url(match):
+                name_re = url_with_label_re.search(match[0]) or ['']
+                return f'[{name_re[0]}]({match[1]})'
+            msg = re.sub(
+                fr'\[[^\]]*\]\(({re.escape(current_elog_url)}[^\)]+)\)(?:\s*\[[^\]]*\]\(\1\))+',
+                build_single_url,
+                msg,
+                flags=re.M|re.I
+            )
+
+            def get_zulip_entry_or_identity(match):
+                url = match[2]
+                if match[3] != attributes["$@MID@$"]:
+                    if elog_zulip := self.elog_zulip_map.find_one(entry_url=re.sub(r'(?<!:)//', '/', url.lower())):
+                        url = elog_zulip['zulip_url']
+                    else:
+                        log.info(f'No matching zulip url was found for entry {match[2]}')
+                return f'[{match[1]}]({url})'
+
+            msg = re.sub(
+                fr'\[([^\]]*)\]\(({re.escape(current_elog_url)}/(\d+))\)',
+                get_zulip_entry_or_identity,
+                msg,
+                flags=re.I
+            )
+
+            return msg
+
+        def _fix_elog_links(msg, rewrite_elog_links=False):
+            msg = _fix_relative_elog_links(msg)
+
+            if rewrite_elog_links:
+                return _rewrite_elog_links_to_zulip(msg)
+
+            return msg
+
         def _send_message(txt):
             txt = _replace_attachments_in_table(txt)
-            r = self._send_message(txt, topic, sender, date)
+            r = self._send_message(txt, topic, sender['email'], date)
             log.info(f'New publication: {self.entry_url(attributes)} - {r}')
+            return r
 
         # combine parts and send to zulip
         message = ''
+        first_zulip_message = None
         for part, part_images in parts:
             # TODO handle len(part) > maxchar
             if part_images:
                 part = _upload_embedded_images(part, part_images)
             if (len(message) + len(part)) > maxchar:
                 if message:
-                    _send_message(message)
+                    r = _send_message(_fix_elog_links(message, self.enable_rewrite_elog_links))
+                    if first_zulip_message is None:
+                        first_zulip_message = r
                 message = part
             else:
                 message += part + os.linesep
         if message:
-            _send_message(message)
+            r = _send_message(_fix_elog_links(message))
+            if first_zulip_message is None:
+                first_zulip_message = r
+
+        if self.impersonate and is_user_new and self.can_create_users:
+            user_info = self._get_user_by_email(sender['email'])
+
+            if not user_info:
+                log.warning(f'User "{sender["email"]}" was not created for unknown reasons.')
+            else:
+                log.info(f'User "{sender["email"]}" was created and added to the user_map.')
+                self._users_map[sender['email']] = user_info
 
         # add entry to db
         data = {'entry_id': int(attributes["$@MID@$"]),
@@ -338,13 +512,26 @@ class Elog:
                 'entry_author': str(attributes['Author'])}
         self.entry.insert(data, ['entry_id'])
 
-    def publish(self, id: int = None):
-        if id is not None:
-            self._publish(*self._read_entry(id))
-            return
+        self.elog_zulip_map.insert({
+            'entry_id': int(attributes["$@MID@$"]),
+            'entry_url': re.sub(r'(?<!:)//', '/', self.entry_url(attributes)).lower(),
+            'zulip_url': f'{self._zulip_url}/#narrow/channel/{self.stream}/topic/{topic}/near/{first_zulip_message["id"]}'
+        })
 
-        for content, attributes, attachments in self.new_entries():
-            self._publish(content, attributes, attachments)
+    def publish(self, ids: int | list[int] = None):
+
+        if ids is not None:
+            ids = [ids] if isinstance(ids, int) else ids
+            assert isinstance(ids, list)
+            saved_entries = self._saved_entries()
+            for id in ids:
+                if id not in saved_entries:
+                    self._publish(*self._read_entry(id))
+                else:
+                    log.warning(f'Message {id} is already present in the db. Skipping.')
+        else:
+            for content, attributes, attachments in self.new_entries():
+                self._publish(content, attributes, attachments)
 
 
 def main(argv=None):
@@ -353,6 +540,8 @@ def main(argv=None):
     ap.add_argument('config', help='toml configuration file')
     ap.add_argument("--dry-run", action="store_true",
                     help="Connect to elog, but mock the database and Zulip.")
+    ap.add_argument('-i', '--id', default=None, type=int, action='append', dest='elog_ids',
+                    help="The id of a message to be imported from the elog (can be specified multiple times).")
     args = ap.parse_args()
     config = toml.load(args.config)
 
@@ -367,9 +556,13 @@ def main(argv=None):
 
     meta = config.pop("META")
 
+    if len(config) > 1 and args.elog_ids:
+        log.error('The --elog-ids option only works if a single import configuration is present in the configuration file.')
+        sys.exit(1)
+
     for elog, conf in config.items():
         conf.update(meta)
-        Elog(conf, args.dry_run).publish()
+        Elog(conf, args.dry_run).publish(args.elog_ids)
 
 
 if __name__ == '__main__':
