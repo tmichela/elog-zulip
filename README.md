@@ -77,6 +77,9 @@ impersonator-email='user@institute.eu'
 use-elog-datetime = false
 # If set to true will map (when possible) the links to other elog messages. This ability only works within the same elog. And is limited to links pointing to previous messages.
 rewrite-elog-links = false
+# Disable impersonation for messages that contain elog links (necessary to be able to
+# fix the links by editing the message)
+no-impersonation-if-links = false
 zulip-stream = 'proposal001234'
 db-table = 'proposal001234'
 # the following (optional) variables can be formatted using jinja2 syntax and use the elog entry variable as input (+ the elog 'EntryUrl')
