@@ -303,6 +303,7 @@ class Elog:
         if self.impersonate and len(attachments) > 0 and is_user_new:
             log.warning(f'Creating users on the fly is currently not implemented falling back to the default user')
             sender = self._fallback_user
+            is_user_new = False
 
         try:
             date = datetime.datetime.strptime(attributes['Date'], '%a, %d %b %Y %H:%M:%S %z') if self.rewrite_datetime else None
