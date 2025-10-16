@@ -17,6 +17,30 @@ from pypandoc import convert_text
 MD_LINE_WIDTH = 350
 MSG_MAX_CHAR = 10_000
 
+# map of elog emoji names to zulip emoji names
+EMOJI_MAP = {
+    'angel_smile': ':angel:',
+    'angry_smile': ':angry:',
+    'confused_smile': ':face_with_diagonal_mouth:',
+    'cry_smile': ':cry:',
+    'embarrassed_smile': ':blushing:',
+    'envelope': ':envelope:',
+    'heart': ':heart:',
+    "laugh": ":laughing:",
+    'lightbulb': ':light_bulb:',
+    'omg_smile': ':surprise:',
+    'regular_smile': ':smile:',
+    'sad_smile': ':sad:',
+    'shades_smile': ':nerd:',
+    'slight_smile': ':smile:',
+    'teeth_smile': ':grinning_face_with_smiling_eyes:',
+    'thumbs_down': ':thumbs_down:',
+    'thumbs_up': ':thumbs_up:',
+    'tongue_smile': ':stuck_out_tongue:',
+    'whatchutalkingabout_smile': ':neutral:',
+    'wink_smile': ':wink:'
+}
+
 
 def _log_error(error):
     with open('./elog-zulip-error.log', 'a') as f:
@@ -234,6 +258,10 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
     def _add_image(image, image_id, data):
         image.replace_with(f"{{image_{image_id}}}")
         images.append((f"image_{image_id}", data))
+    
+    def _add_emoji(image, emoji):
+        # replace emoji img with markdown emoji
+        image.replace_with(EMOJI_MAP.get(emoji, f":{emoji}:"))
 
     for idx, img in enumerate(soup.find_all("img")):
         if not (src := img.attrs.get("src")):
@@ -262,6 +290,9 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
                 else:
                     parent.replace_with(f'{{attachment_{index}}}')
                     images.append((f'attachment_{index}', index))
+        elif m := re.match(r'https?://in\.xfel\.eu/elog/ckeditor/plugins/smiley/images/([^/"]+)\.\w+', src):
+            # emoji from the elog emoji plugin
+            _add_emoji(img, m.group(1))
         elif m := re.match(r'data:image/(png|jpe?g);base64,', src):
             data = src[m.span()[1]:]
             alt = img.attrs.get('alt', None)
