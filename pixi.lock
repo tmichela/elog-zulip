@@ -280,7 +280,7 @@ packages:
 - pypi: ./
   name: elog-zulip
   version: 0.2.0
-  sha256: 5c71384df1bba98df653c110a62189d953183d9d7259f6cb7c3e97fc835140e2
+  sha256: c594bce9f500197d718740a6217d55445279e9e35bcfd54c52da3cdd5b95cf07
   requires_dist:
   - bs4
   - dataset
