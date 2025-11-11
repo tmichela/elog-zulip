@@ -327,6 +327,101 @@ def extract_embedded_images(html, attachments) -> BeautifulSoup:
     return soup, images
 
 
+def _collect_list_table_placeholders(container_soup: BeautifulSoup) -> dict:
+    """Replace top-level tables with placeholders and return their markdown."""
+    placeholder_map = {}
+    for list_table in list(container_soup.find_all("table")):
+        if list_table.find_parent("table"):
+            continue
+        md_table = table_to_md(list_table)
+        if isinstance(md_table, list):
+            md_table = "\n".join(md_table)
+        placeholder = f"__TABLE_PLACEHOLDER_{uuid4().hex}__"
+        placeholder_tag = container_soup.new_tag("p")
+        placeholder_tag.string = placeholder
+        list_table.replace_with(placeholder_tag)
+        placeholder_map[placeholder] = md_table.strip("\n")
+    return placeholder_map
+
+
+def _replace_placeholder_in_md(md_text: str, placeholder: str, md_value: str) -> str:
+    """Replace placeholder markers with markdown while preserving indentation."""
+    while True:
+        idx = md_text.find(placeholder)
+        if idx == -1:
+            break
+
+        line_start = md_text.rfind("\n", 0, idx) + 1
+        line_end = md_text.find("\n", idx)
+        if line_end == -1:
+            line_end = len(md_text)
+
+        line = md_text[line_start:line_end]
+        prefix = line[: idx - line_start]
+        suffix = line[idx - line_start + len(placeholder):]
+
+        indent_match = re.match(r"([ \t]*)(.*)", prefix)
+        indent = indent_match.group(1)
+        after_indent = indent_match.group(2)
+
+        bullet_match = re.match(r"((?:[-\+\*]|\d+[.)])\s+)(.*)", after_indent)
+        table_lines = md_value.splitlines()
+        block_lines: List[str] = []
+
+        if bullet_match:
+            bullet = bullet_match.group(1)
+            bullet_text = bullet_match.group(2)
+            bullet_indent = indent + " " * len(bullet)
+            bullet_line = indent + bullet + bullet_text
+            block_lines.append(bullet_line)
+            block_lines.append("")
+            for table_line in table_lines:
+                if table_line:
+                    block_lines.append(f"{bullet_indent}{table_line}")
+                else:
+                    block_lines.append("")
+        else:
+            if table_lines:
+                first_line = prefix + table_lines[0]
+                block_lines.append(first_line)
+                for table_line in table_lines[1:]:
+                    if table_line:
+                        block_lines.append(f"{indent}{table_line}")
+                    else:
+                        block_lines.append("")
+            else:
+                block_lines.append(prefix.rstrip())
+
+        if suffix:
+            if block_lines:
+                block_lines[-1] = f"{block_lines[-1]}{suffix}"
+            else:
+                block_lines.append(suffix)
+
+        replacement = "\n".join(block_lines)
+        md_text = f"{md_text[:line_start]}{replacement}{md_text[line_end:]}"
+    return md_text
+
+
+def _render_list_container(container, attachments, maxchar):
+    """Render a list container that includes tables without breaking the list."""
+    container_soup, container_images = extract_embedded_images(
+        str(container), attachments
+    )
+    placeholder_map = _collect_list_table_placeholders(container_soup)
+    container_md = html_to_md(str(container_soup))
+    for placeholder, md_value in placeholder_map.items():
+        container_md = _replace_placeholder_in_md(container_md, placeholder, md_value)
+
+    rendered_parts = []
+    for chunk in split_string(container_md, maxchar=maxchar):
+        if not chunk.strip():
+            continue
+        chunk_images = [im for im in container_images if im[0] in chunk]
+        rendered_parts.append((chunk, chunk_images))
+    return rendered_parts
+
+
 def format_text(text: str, attachments: List[str], maxchar: int = MSG_MAX_CHAR) -> Iterator[Tuple[str, List]]:
     if not is_html(text):
         return [(p, []) for p in split_string(text, maxchar=maxchar)]
@@ -362,96 +457,9 @@ def format_text(text: str, attachments: List[str], maxchar: int = MSG_MAX_CHAR) 
                 processed_lists.add(container_id)
                 _add_part(part)
 
-                container_soup, container_images = extract_embedded_images(
-                    str(container), attachments
+                parts.extend(
+                    _render_list_container(container, attachments, maxchar)
                 )
-                placeholder_map = {}
-                for list_table in list(container_soup.find_all("table")):
-                    if list_table.find_parent("table"):
-                        continue
-                    md_table = table_to_md(list_table)
-                    if isinstance(md_table, list):
-                        md_table = "\n".join(md_table)
-                    placeholder = f"__TABLE_PLACEHOLDER_{uuid4().hex}__"
-                    placeholder_tag = container_soup.new_tag("p")
-                    placeholder_tag.string = placeholder
-                    list_table.replace_with(placeholder_tag)
-                    placeholder_map[placeholder] = md_table.strip("\n")
-
-                container_md = html_to_md(str(container_soup))
-
-                def _replace_placeholder(md_text: str, placeholder: str, md_value: str) -> str:
-                    while True:
-                        idx = md_text.find(placeholder)
-                        if idx == -1:
-                            break
-
-                        line_start = md_text.rfind("\n", 0, idx) + 1
-                        line_end = md_text.find("\n", idx)
-                        if line_end == -1:
-                            line_end = len(md_text)
-
-                        line = md_text[line_start:line_end]
-                        prefix = line[: idx - line_start]
-                        suffix = line[idx - line_start + len(placeholder):]
-
-                        indent_match = re.match(r"([ \t]*)(.*)", prefix)
-                        indent = indent_match.group(1)
-                        after_indent = indent_match.group(2)
-
-                        bullet_match = re.match(
-                            r"((?:[-\+\*]|\d+[.)])\s+)(.*)", after_indent
-                        )
-
-                        table_lines = md_value.splitlines()
-                        block_lines = []
-
-                        if bullet_match:
-                            bullet = bullet_match.group(1)
-                            bullet_text = bullet_match.group(2)
-                            bullet_indent = indent + " " * len(bullet)
-                            bullet_line = indent + bullet + bullet_text
-                            block_lines.append(bullet_line)
-                            block_lines.append("")
-                            for table_line in table_lines:
-                                if table_line:
-                                    block_lines.append(f"{bullet_indent}{table_line}")
-                                else:
-                                    block_lines.append("")
-                        else:
-                            if table_lines:
-                                first_line = prefix + table_lines[0]
-                                block_lines.append(first_line)
-                                for table_line in table_lines[1:]:
-                                    if table_line:
-                                        block_lines.append(f"{indent}{table_line}")
-                                    else:
-                                        block_lines.append("")
-                            else:
-                                block_lines.append(prefix.rstrip())
-
-                        if suffix:
-                            if block_lines:
-                                block_lines[-1] = f"{block_lines[-1]}{suffix}"
-                            else:
-                                block_lines.append(suffix)
-
-                        replacement = "\n".join(block_lines)
-                        md_text = (
-                            f"{md_text[:line_start]}{replacement}{md_text[line_end:]}"
-                        )
-                    return md_text
-
-                for placeholder, md_value in placeholder_map.items():
-                    container_md = _replace_placeholder(
-                        container_md, placeholder, md_value
-                    )
-
-                for chunk in split_string(container_md, maxchar=maxchar):
-                    if not chunk.strip():
-                        continue
-                    chunk_images = [im for im in container_images if im[0] in chunk]
-                    parts.append((chunk, chunk_images))
                 remain = tail
                 continue
 
