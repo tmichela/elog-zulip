@@ -337,6 +337,7 @@ def format_text(text: str, attachments: List[str], maxchar: int = MSG_MAX_CHAR) 
     #   - separate tables from the messages to be rendered with pandas
     #   - split text in multiple messages if it is too long
     parts = []
+    processed_lists = set()
 
     def _add_part(_part):
         _part, images = extract_embedded_images(_part, attachments)
@@ -348,6 +349,112 @@ def format_text(text: str, attachments: List[str], maxchar: int = MSG_MAX_CHAR) 
 
     remain = text
     for table in get_sub_tables(soup, depth=0):
+        li_parent = table.find_parent("li")
+        if li_parent:
+            container = li_parent.find_parent(["ul", "ol"]) or li_parent
+            container_id = id(container)
+            if container_id in processed_lists:
+                continue
+
+            normalized_remain = str(BeautifulSoup(remain, "lxml"))
+            part, sep, tail = normalized_remain.partition(str(container))
+            if sep:
+                processed_lists.add(container_id)
+                _add_part(part)
+
+                container_soup, container_images = extract_embedded_images(
+                    str(container), attachments
+                )
+                placeholder_map = {}
+                for list_table in list(container_soup.find_all("table")):
+                    if list_table.find_parent("table"):
+                        continue
+                    md_table = table_to_md(list_table)
+                    if isinstance(md_table, list):
+                        md_table = "\n".join(md_table)
+                    placeholder = f"__TABLE_PLACEHOLDER_{uuid4().hex}__"
+                    placeholder_tag = container_soup.new_tag("p")
+                    placeholder_tag.string = placeholder
+                    list_table.replace_with(placeholder_tag)
+                    placeholder_map[placeholder] = md_table.strip("\n")
+
+                container_md = html_to_md(str(container_soup))
+
+                def _replace_placeholder(md_text: str, placeholder: str, md_value: str) -> str:
+                    while True:
+                        idx = md_text.find(placeholder)
+                        if idx == -1:
+                            break
+
+                        line_start = md_text.rfind("\n", 0, idx) + 1
+                        line_end = md_text.find("\n", idx)
+                        if line_end == -1:
+                            line_end = len(md_text)
+
+                        line = md_text[line_start:line_end]
+                        prefix = line[: idx - line_start]
+                        suffix = line[idx - line_start + len(placeholder):]
+
+                        indent_match = re.match(r"([ \t]*)(.*)", prefix)
+                        indent = indent_match.group(1)
+                        after_indent = indent_match.group(2)
+
+                        bullet_match = re.match(
+                            r"((?:[-\+\*]|\d+[.)])\s+)(.*)", after_indent
+                        )
+
+                        table_lines = md_value.splitlines()
+                        block_lines = []
+
+                        if bullet_match:
+                            bullet = bullet_match.group(1)
+                            bullet_text = bullet_match.group(2)
+                            bullet_indent = indent + " " * len(bullet)
+                            bullet_line = indent + bullet + bullet_text
+                            block_lines.append(bullet_line)
+                            block_lines.append("")
+                            for table_line in table_lines:
+                                if table_line:
+                                    block_lines.append(f"{bullet_indent}{table_line}")
+                                else:
+                                    block_lines.append("")
+                        else:
+                            if table_lines:
+                                first_line = prefix + table_lines[0]
+                                block_lines.append(first_line)
+                                for table_line in table_lines[1:]:
+                                    if table_line:
+                                        block_lines.append(f"{indent}{table_line}")
+                                    else:
+                                        block_lines.append("")
+                            else:
+                                block_lines.append(prefix.rstrip())
+
+                        if suffix:
+                            if block_lines:
+                                block_lines[-1] = f"{block_lines[-1]}{suffix}"
+                            else:
+                                block_lines.append(suffix)
+
+                        replacement = "\n".join(block_lines)
+                        md_text = (
+                            f"{md_text[:line_start]}{replacement}{md_text[line_end:]}"
+                        )
+                    return md_text
+
+                for placeholder, md_value in placeholder_map.items():
+                    container_md = _replace_placeholder(
+                        container_md, placeholder, md_value
+                    )
+
+                for chunk in split_string(container_md, maxchar=maxchar):
+                    if not chunk.strip():
+                        continue
+                    chunk_images = [im for im in container_images if im[0] in chunk]
+                    parts.append((chunk, chunk_images))
+                remain = tail
+                continue
+
         part, _, remain = str(BeautifulSoup(remain, "lxml")).partition(str(table))
         _add_part(part)
 
