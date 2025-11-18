@@ -67,6 +67,7 @@ class Elog:
         self.rewrite_datetime = config.get('use-elog-datetime', False)
         self.can_create_users = config.get('can-create-users', dry_run)
         self.enable_rewrite_elog_links = config.get('rewrite-elog-links', False)
+        self.no_impersonation_if_links = config.get('no-impersonation-if-links', False)
         self._fallback_user = {
             'email': 'me@example.com',
             'user_id': None
@@ -303,6 +304,7 @@ class Elog:
         if self.impersonate and len(attachments) > 0 and is_user_new:
             log.warning(f'Creating users on the fly is currently not implemented falling back to the default user')
             sender = self._fallback_user
+            is_user_new = False
 
         try:
             date = datetime.datetime.strptime(attributes['Date'], '%a, %d %b %Y %H:%M:%S %z') if self.rewrite_datetime else None
@@ -480,20 +482,31 @@ class Elog:
         # combine parts and send to zulip
         message = ''
         first_zulip_message = None
+        elog_base_url = self.logbook._url.rstrip("/").rpartition("/")[0]
+        # this will match any elog link ()
+        has_elog_links_re = re.compile(fr'\[([^\]]*)\]\({re.escape(elog_base_url)}/[^\/]+/\d+\)')
         for part, part_images in parts:
             # TODO handle len(part) > maxchar
             if part_images:
                 part = _upload_embedded_images(part, part_images)
             if (len(message) + len(part)) > maxchar:
                 if message:
-                    r = _send_message(_fix_elog_links(message, self.enable_rewrite_elog_links))
+                    msg_txt = _fix_elog_links(message, self.enable_rewrite_elog_links)
+                    if self.impersonate and self.no_impersonation_if_links and has_elog_links_re.search(msg_txt):
+                        sender = self._fallback_user
+                        is_user_new = False
+                    r = _send_message(msg_txt)
                     if first_zulip_message is None:
                         first_zulip_message = r
                 message = part
             else:
                 message += part + os.linesep
         if message:
-            r = _send_message(_fix_elog_links(message))
+            msg_txt = _fix_elog_links(message, self.enable_rewrite_elog_links)
+            if self.impersonate and self.no_impersonation_if_links and has_elog_links_re.search(msg_txt):
+                sender = self._fallback_user
+                is_user_new = False
+            r = _send_message(msg_txt)
             if first_zulip_message is None:
                 first_zulip_message = r
 
